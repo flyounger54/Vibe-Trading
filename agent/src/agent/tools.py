@@ -5,9 +5,52 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from functools import wraps
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-from typing import Any, Dict, List, Optional
+
+
+_DATA_TOOL_SOURCES = {
+    "get_market_data": "multi-provider",
+    "get_fund_flow": "eastmoney",
+    "get_dragon_tiger": "eastmoney",
+    "get_northbound_flow": "eastmoney",
+    "get_margin_trading": "eastmoney",
+    "get_block_trades": "eastmoney",
+    "get_shareholder_count": "eastmoney",
+    "get_lockup_expiry": "eastmoney",
+    "get_sector_info": "eastmoney",
+    "get_research_reports": "eastmoney+ths",
+    "get_stock_news": "eastmoney+yahoo",
+    "get_sec_filings": "sec-edgar",
+    "get_financial_statements": "eastmoney",
+    "get_options_chain": "yahoo",
+    "get_stock_profile": "yahoo",
+    "screen_market": "eastmoney",
+    "search_symbol": "eastmoney+yahoo",
+    "get_macro_series": "fred",
+    "iwencai_search": "iwencai",
+}
+
+
+def _enrich_data_tool_result(tool_name: str, result: object) -> object:
+    """Add uniform provenance/as-of/failure fields to specialist data tools."""
+    if tool_name not in _DATA_TOOL_SOURCES or not isinstance(result, str):
+        return result
+    try:
+        payload = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return result
+    if not isinstance(payload, dict):
+        return result
+    payload.setdefault("source", _DATA_TOOL_SOURCES[tool_name])
+    payload.setdefault("as_of", datetime.now(timezone.utc).isoformat())
+    if payload.get("ok") is False or "error" in payload:
+        reason = payload.get("error") or payload.get("reason") or "data provider failed"
+        payload.setdefault("failure_reason", str(reason))
+    return json.dumps(payload, ensure_ascii=False, allow_nan=False)
 
 
 class BaseTool(ABC):
@@ -25,6 +68,19 @@ class BaseTool(ABC):
     parameters: Dict[str, Any] = {}
     repeatable: bool = False
     is_readonly: bool = True
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Wrap specialist data-tool responses in the common provenance contract."""
+        super().__init_subclass__(**kwargs)
+        execute = cls.__dict__.get("execute")
+        if execute is None or getattr(cls, "name", "") not in _DATA_TOOL_SOURCES:
+            return
+
+        @wraps(execute)
+        def enriched(self: "BaseTool", **call_kwargs: Any) -> object:
+            return _enrich_data_tool_result(cls.name, execute(self, **call_kwargs))
+
+        cls.execute = enriched  # type: ignore[method-assign]
 
     @classmethod
     def check_available(cls) -> bool:

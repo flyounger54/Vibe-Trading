@@ -1,14 +1,14 @@
-"""A-share loader: mootdx TCP + Tencent HTTP with internal fallback.
+"""A-share loader: TDX TCP + Tencent HTTP with explicit price semantics.
 
 Wraps the battle-tested data functions from a-stock-data into Vibe-Trading's
-DataLoaderProtocol. Prioritizes mootdx (TCP, no IP ban, all intervals) and
-falls back to Tencent Finance (HTTP, no IP ban, daily only) when TCP is
-unreachable (e.g. overseas networks blocking port 7709).
+DataLoaderProtocol. Raw requests use tdxpy over TDX TCP; explicit qfq requests
+use Tencent Finance. The two paths never silently substitute for one another.
 """
 
 from __future__ import annotations
 
 import logging
+import importlib.util
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -21,6 +21,7 @@ from backtest.loaders.providers.astock import (
     tencent_kline,
 )
 from backtest.loaders.registry import register
+from backtest.loaders.platform import Adjustment, BAR_SCHEMA_VERSION, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +50,31 @@ def _rows_to_dataframe(rows: list[dict]) -> Optional[pd.DataFrame]:
 
 @register
 class DataLoader:
-    """A-share OHLCV loader backed by mootdx + Tencent Finance."""
+    """A-share OHLCV loader backed by TDX TCP + Tencent Finance."""
 
     name = "astock"
     markets = {"a_share"}
     requires_auth = False
+    provider_version = "astock-mootdx-tencent-v1"
+    capabilities = ProviderCapabilities(
+        intervals=frozenset(MOOTDX_FREQ),
+        adjustments=frozenset({Adjustment.NONE, Adjustment.QFQ}),
+        supports_pagination=True,
+    )
 
     def is_available(self) -> bool:
-        return True
+        # Tencent uses only the Python standard library; mootdx is optional and
+        # its real status is exposed separately instead of being hidden.
+        return callable(tencent_kline)
+
+    @staticmethod
+    def availability_diagnostics() -> dict[str, object]:
+        return {
+            "available": callable(tencent_kline),
+            "tdxpy_installed": importlib.util.find_spec("tdxpy") is not None,
+            "mootdx_compatibility": "not-used: mootdx 0.11.7 conflicts with httpx>=0.28",
+            "tencent_transport": "stdlib-urllib",
+        }
 
     def fetch(
         self,
@@ -66,8 +84,12 @@ class DataLoader:
         *,
         interval: str = "1D",
         fields: Optional[List[str]] = None,
+        adjustment: str = "none",
     ) -> Dict[str, pd.DataFrame]:
         validate_date_range(start_date, end_date)
+        normalized_adjustment = Adjustment(adjustment)
+        if not self.capabilities.supports(interval=interval, adjustment=normalized_adjustment):
+            raise ValueError(f"astock does not support interval={interval}, adjustment={adjustment}")
 
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:
@@ -82,7 +104,12 @@ class DataLoader:
                     start_date=start_date,
                     end_date=end_date,
                     fields=None,
-                    fetch=lambda c=code: self._fetch_one(c, start_date, end_date, interval),
+                    schema_version=BAR_SCHEMA_VERSION,
+                    provider_version=self.provider_version,
+                    adjustment=normalized_adjustment.value,
+                    fetch=lambda c=code: self._fetch_one(
+                        c, start_date, end_date, interval, normalized_adjustment
+                    ),
                 )
                 if df is not None and not df.empty:
                     result[code] = df
@@ -92,29 +119,27 @@ class DataLoader:
 
     def _fetch_one(
         self, code: str, start_date: str, end_date: str, interval: str,
+        adjustment: Adjustment,
     ) -> Optional[pd.DataFrame]:
         symbol = normalize_code(code)
 
-        if interval not in MOOTDX_FREQ and interval != "1D":
-            logger.warning("astock: unsupported interval %s, falling back to 1D", interval)
-            interval = "1D"
+        # Raw prices and Tencent's forward-adjusted prices are intentionally
+        # separate paths. Internal fallback must never change adjustment.
+        if adjustment is Adjustment.NONE:
+            try:
+                rows = mootdx_kline(symbol, start_date, end_date, interval)
+                if rows:
+                    return _rows_to_dataframe(rows)
+            except Exception as exc:
+                logger.debug("astock: mootdx failed for %s: %s", symbol, exc)
+            return None
 
-        # Try mootdx first (TCP, all intervals)
-        try:
-            rows = mootdx_kline(symbol, start_date, end_date, interval)
-            if rows:
-                return _rows_to_dataframe(rows)
-            logger.debug("astock: mootdx returned empty for %s, trying tencent", symbol)
-        except Exception as exc:
-            logger.debug("astock: mootdx failed for %s (%s), trying tencent", symbol, exc)
-
-        # Tencent fallback (HTTP, daily only)
-        if interval in ("1D", "1W", "1M"):
+        if adjustment is Adjustment.QFQ and interval in ("1D", "1W", "1M"):
             try:
                 rows = tencent_kline(symbol, start_date, end_date)
                 if rows:
                     return _rows_to_dataframe(rows)
             except Exception as exc:
-                logger.warning("astock: tencent also failed for %s: %s", symbol, exc)
+                logger.warning("astock: Tencent qfq failed for %s: %s", symbol, exc)
 
         return None

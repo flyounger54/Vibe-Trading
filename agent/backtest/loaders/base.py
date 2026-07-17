@@ -16,6 +16,7 @@ import logging
 import os
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Protocol, TypeVar, runtime_checkable
 
@@ -225,19 +226,53 @@ LOADER_CACHE_ENV = "VIBE_TRADING_DATA_CACHE"
 _LOADER_CACHE_FALSE_VALUES = {"0", "false", "no", "off"}
 # Bump when the key payload or on-disk layout changes so stale entries are
 # simply never matched (old files become unreachable garbage, safe to delete).
-_LOADER_CACHE_VERSION = 2
+_LOADER_CACHE_VERSION = 3
 
 # In-memory LRU cache: avoids redundant Parquet reads and network fetches
 # within the same process. Keyed by the same content-addressed hash as
 # the disk cache. Entries for settled (historical) ranges live forever;
 # intraday ranges get a 5-minute TTL.
-_MEMORY_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_MEMORY_CACHE: OrderedDict[str, tuple[float, pd.DataFrame]] = OrderedDict()
 _MEMORY_TTL_SECONDS = 300.0
+_MEMORY_MAX_ENTRIES_DEFAULT = 256
+_CACHE_STATS = {
+    "l1_hits": 0,
+    "l1_misses": 0,
+    "l1_evictions": 0,
+    "l2_hits": 0,
+    "l2_misses": 0,
+    "corrupt_entries_removed": 0,
+}
 
 
 def loader_cache_enabled() -> bool:
     """Return whether the local market-data cache is enabled (default: on)."""
     return os.getenv(LOADER_CACHE_ENV, "").strip().lower() not in _LOADER_CACHE_FALSE_VALUES
+
+
+def loader_memory_cache_clear(*, reset_stats: bool = True) -> None:
+    """Clear the process-local cache (primarily for operations and tests)."""
+    _MEMORY_CACHE.clear()
+    if reset_stats:
+        for name in _CACHE_STATS:
+            _CACHE_STATS[name] = 0
+
+
+def loader_cache_stats() -> dict[str, int]:
+    """Return a point-in-time snapshot of cache health counters."""
+    return {**_CACHE_STATS, "l1_entries": len(_MEMORY_CACHE)}
+
+
+def _memory_cache_put(key: str, frame: pd.DataFrame) -> None:
+    """Insert one L1 entry and evict least-recently-used entries."""
+    _MEMORY_CACHE[key] = (time.monotonic(), frame)
+    _MEMORY_CACHE.move_to_end(key)
+    limit = positive_env_int(
+        "VIBE_TRADING_DATA_MEMORY_MAX_ENTRIES", _MEMORY_MAX_ENTRIES_DEFAULT
+    )
+    while len(_MEMORY_CACHE) > limit:
+        _MEMORY_CACHE.popitem(last=False)
+        _CACHE_STATS["l1_evictions"] += 1
 
 
 def make_loader_cache_key(
@@ -248,6 +283,9 @@ def make_loader_cache_key(
     start_date: str,
     end_date: str,
     fields: list[str] | tuple[str, ...] | None = None,
+    schema_version: str = "legacy",
+    provider_version: str = "unknown",
+    adjustment: str = "none",
 ) -> str:
     """Build a stable content-addressed key for one loader payload."""
     payload = _loader_cache_payload(
@@ -257,6 +295,9 @@ def make_loader_cache_key(
         start_date=start_date,
         end_date=end_date,
         fields=fields,
+        schema_version=schema_version,
+        provider_version=provider_version,
+        adjustment=adjustment,
     )
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
@@ -270,6 +311,9 @@ def loader_cache_path(
     start_date: str,
     end_date: str,
     fields: list[str] | tuple[str, ...] | None = None,
+    schema_version: str = "legacy",
+    provider_version: str = "unknown",
+    adjustment: str = "none",
 ) -> Path:
     """Return the parquet cache path for one loader payload."""
     key = make_loader_cache_key(
@@ -279,6 +323,9 @@ def loader_cache_path(
         start_date=start_date,
         end_date=end_date,
         fields=fields,
+        schema_version=schema_version,
+        provider_version=provider_version,
+        adjustment=adjustment,
     )
     source_dir = _sanitize_cache_segment(source)
     return Path.home() / ".vibe-trading" / "cache" / "loaders" / source_dir / f"{key}.parquet"
@@ -307,6 +354,9 @@ def loader_cache_get(
     start_date: str,
     end_date: str,
     fields: list[str] | tuple[str, ...] | None = None,
+    schema_version: str = "legacy",
+    provider_version: str = "unknown",
+    adjustment: str = "none",
 ) -> pd.DataFrame | None:
     """Return a cached DataFrame for one payload, or ``None`` on any miss.
 
@@ -323,6 +373,9 @@ def loader_cache_get(
         start_date=start_date,
         end_date=end_date,
         fields=fields,
+        schema_version=schema_version,
+        provider_version=provider_version,
+        adjustment=adjustment,
     )
     return _read_loader_cache_frame(cache_path)
 
@@ -336,6 +389,9 @@ def loader_cache_put(
     end_date: str,
     fields: list[str] | tuple[str, ...] | None,
     frame: pd.DataFrame | None,
+    schema_version: str = "legacy",
+    provider_version: str = "unknown",
+    adjustment: str = "none",
 ) -> None:
     """Write one non-empty DataFrame to the cache; a no-op when not cacheable.
 
@@ -353,6 +409,9 @@ def loader_cache_put(
         start_date=start_date,
         end_date=end_date,
         fields=fields,
+        schema_version=schema_version,
+        provider_version=provider_version,
+        adjustment=adjustment,
     )
     _write_loader_cache_frame(cache_path, frame)
 
@@ -366,6 +425,9 @@ def cached_loader_fetch(
     end_date: str,
     fields: list[str] | tuple[str, ...] | None,
     fetch: Callable[[], pd.DataFrame | None],
+    schema_version: str = "legacy",
+    provider_version: str = "unknown",
+    adjustment: str = "none",
 ) -> pd.DataFrame | None:
     """Fetch one DataFrame through the three-tier cache.
 
@@ -376,6 +438,8 @@ def cached_loader_fetch(
     cache_key = make_loader_cache_key(
         source=source, symbol=symbol, timeframe=timeframe,
         start_date=start_date, end_date=end_date, fields=fields,
+        schema_version=schema_version, provider_version=provider_version,
+        adjustment=adjustment,
     )
 
     # L1: in-memory cache
@@ -384,27 +448,35 @@ def cached_loader_fetch(
         stored_at, df = mem_entry
         is_settled = loader_cache_range_is_final(end_date)
         if is_settled or (time.monotonic() - stored_at < _MEMORY_TTL_SECONDS):
+            _CACHE_STATS["l1_hits"] += 1
+            _MEMORY_CACHE.move_to_end(cache_key)
             return df
+        _MEMORY_CACHE.pop(cache_key, None)
+    _CACHE_STATS["l1_misses"] += 1
 
     # L2: Parquet disk cache
     cached = loader_cache_get(
         source=source, symbol=symbol, timeframe=timeframe,
         start_date=start_date, end_date=end_date, fields=fields,
+        schema_version=schema_version, provider_version=provider_version,
+        adjustment=adjustment,
     )
     if cached is not None:
-        _MEMORY_CACHE[cache_key] = (time.monotonic(), cached)
+        _memory_cache_put(cache_key, cached)
         return cached
 
     # L3: live fetch
     frame = fetch()
 
     if isinstance(frame, pd.DataFrame) and not frame.empty:
-        _MEMORY_CACHE[cache_key] = (time.monotonic(), frame)
+        _memory_cache_put(cache_key, frame)
 
     loader_cache_put(
         source=source, symbol=symbol, timeframe=timeframe,
         start_date=start_date, end_date=end_date,
         fields=fields, frame=frame,
+        schema_version=schema_version, provider_version=provider_version,
+        adjustment=adjustment,
     )
     return frame
 
@@ -417,6 +489,9 @@ def _loader_cache_payload(
     start_date: str,
     end_date: str,
     fields: list[str] | tuple[str, ...] | None,
+    schema_version: str = "legacy",
+    provider_version: str = "unknown",
+    adjustment: str = "none",
 ) -> dict[str, object]:
     return {
         "version": _LOADER_CACHE_VERSION,
@@ -426,6 +501,9 @@ def _loader_cache_payload(
         "start_date": _normalize_cache_date(start_date),
         "end_date": _normalize_cache_date(end_date),
         "fields": [str(field) for field in (fields or ())],
+        "schema_version": str(schema_version),
+        "provider_version": str(provider_version),
+        "adjustment": str(adjustment),
     }
 
 
@@ -444,13 +522,19 @@ def _loader_cache_metadata_path(cache_path: Path) -> Path:
 
 def _read_loader_cache_frame(cache_path: Path) -> pd.DataFrame | None:
     if not cache_path.is_file():
+        _CACHE_STATS["l2_misses"] += 1
         return None
 
     metadata_path = _loader_cache_metadata_path(cache_path)
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("version") != _LOADER_CACHE_VERSION:
+            raise ValueError(
+                f"cache version {metadata.get('version')!r} != {_LOADER_CACHE_VERSION}"
+            )
     except Exception as exc:  # noqa: BLE001 - local cache miss is non-fatal
         logger.warning("loader cache metadata read failed for %s: %s", cache_path.name, exc)
+        _remove_corrupt_cache_entry(cache_path)
         return None
 
     con = None
@@ -463,6 +547,7 @@ def _read_loader_cache_frame(cache_path: Path) -> pd.DataFrame | None:
         ).fetchdf()
     except Exception as exc:  # noqa: BLE001 - corrupt cache falls back to provider
         logger.warning("loader cache read failed for %s: %s", cache_path.name, exc)
+        _remove_corrupt_cache_entry(cache_path)
         return None
     finally:
         if con is not None:
@@ -473,12 +558,32 @@ def _read_loader_cache_frame(cache_path: Path) -> pd.DataFrame | None:
         missing = [column for column in index_columns if column not in frame.columns]
         if missing:
             logger.warning("loader cache %s missing index column(s): %s", cache_path.name, missing)
+            _remove_corrupt_cache_entry(cache_path)
             return None
         frame = frame.set_index(index_columns)
         frame.index.names = metadata.get("index_names") or index_columns
         frame = _restore_cache_index_dtypes(frame, metadata.get("index_dtypes"))
     frame.columns.name = metadata.get("columns_name")
+    attrs = metadata.get("frame_attrs")
+    if isinstance(attrs, dict):
+        frame.attrs.update(attrs)
+    _CACHE_STATS["l2_hits"] += 1
     return frame
+
+
+def _remove_corrupt_cache_entry(cache_path: Path) -> None:
+    removed = False
+    for path in (cache_path, _loader_cache_metadata_path(cache_path)):
+        try:
+            path.unlink()
+            removed = True
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("unable to remove corrupt loader cache %s: %s", path.name, exc)
+    if removed:
+        _CACHE_STATS["corrupt_entries_removed"] += 1
+    _CACHE_STATS["l2_misses"] += 1
 
 
 def _restore_cache_index_dtypes(frame: pd.DataFrame, index_dtypes: object) -> pd.DataFrame:
@@ -553,6 +658,7 @@ def _frame_for_loader_cache(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str
     cache_frame.index = cache_frame.index.set_names(index_columns)
     metadata: dict[str, object] = {
         "version": _LOADER_CACHE_VERSION,
+        "stored_at": time.time(),
         "index_columns": index_columns,
         "index_names": original_index_names,
         # Preserve the columns-axis name (e.g. yfinance leaves "Price") and the
@@ -561,8 +667,79 @@ def _frame_for_loader_cache(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str
         # resolution, e.g. [s] -> [us]).
         "columns_name": None if columns_name is None else str(columns_name),
         "index_dtypes": index_dtypes,
+        "frame_attrs": _json_safe_cache_attrs(frame.attrs),
     }
     return cache_frame.reset_index(), metadata
+
+
+def _json_safe_cache_attrs(attrs: dict[object, object]) -> dict[str, object]:
+    """Retain only JSON-serializable DataFrame attrs in disk metadata."""
+    safe: dict[str, object] = {}
+    for key, value in attrs.items():
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            logger.debug("loader cache skipped non-JSON frame attr %r", key)
+            continue
+        safe[str(key)] = value
+    return safe
+
+
+def loader_cache_prune(
+    *,
+    max_bytes: int,
+    max_entries: int,
+    ttl_seconds: float,
+    now: float | None = None,
+) -> dict[str, int]:
+    """Remove expired and oldest L2 entries until capacity limits are met.
+
+    Both Parquet data and its metadata sidecar count toward ``max_bytes``.
+    Missing or malformed metadata is treated as expired/corrupt.
+    """
+    if max_bytes < 0 or max_entries < 0 or ttl_seconds < 0:
+        raise ValueError("cache prune limits must be non-negative")
+    root = Path.home() / ".vibe-trading" / "cache" / "loaders"
+    clock = time.time() if now is None else now
+    entries: list[tuple[float, int, Path, Path]] = []
+    removed = 0
+
+    for parquet in root.glob("*/*.parquet") if root.is_dir() else ():
+        metadata_path = _loader_cache_metadata_path(parquet)
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            stored_at = float(metadata["stored_at"])
+            size = parquet.stat().st_size + metadata_path.stat().st_size
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            _remove_cache_files(parquet, metadata_path)
+            removed += 1
+            continue
+        if clock - stored_at > ttl_seconds:
+            _remove_cache_files(parquet, metadata_path)
+            removed += 1
+            continue
+        entries.append((stored_at, size, parquet, metadata_path))
+
+    total_bytes = sum(entry[1] for entry in entries)
+    entries.sort(key=lambda entry: entry[0])
+    while entries and (len(entries) > max_entries or total_bytes > max_bytes):
+        _, size, parquet, metadata_path = entries.pop(0)
+        _remove_cache_files(parquet, metadata_path)
+        total_bytes -= size
+        removed += 1
+    return {
+        "removed_entries": removed,
+        "remaining_entries": len(entries),
+        "remaining_bytes": max(0, total_bytes),
+    }
+
+
+def _remove_cache_files(*paths: Path) -> None:
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _cache_index_columns(frame: pd.DataFrame) -> list[str]:

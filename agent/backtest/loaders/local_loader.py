@@ -40,6 +40,7 @@ import yaml
 
 from backtest.loaders.base import cached_loader_fetch, validate_date_range, validate_ohlc
 from backtest.loaders.registry import register
+from backtest.loaders.platform import Adjustment, BAR_SCHEMA_VERSION, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,11 @@ class DataLoader:
     name = "local"
     markets = {"us_equity", "a_share", "hk_equity", "crypto", "futures", "forex", "macro", "fund"}
     requires_auth = False
+    provider_version = "local-bridge-v1"
+    capabilities = ProviderCapabilities(
+        intervals=frozenset({"1m", "5m", "15m", "30m", "1H", "4H", "1D", "1W", "1M"}),
+        adjustments=frozenset({Adjustment.NONE}),
+    )
 
     def __init__(self) -> None:
         self._config: dict[str, Any] | None = None
@@ -184,6 +190,7 @@ class DataLoader:
         *,
         interval: str = "1D",
         fields: Optional[List[str]] = None,
+        adjustment: str = "none",
     ) -> Dict[str, pd.DataFrame]:
         """Fetch OHLCV data for each code from configured local sources.
 
@@ -198,6 +205,8 @@ class DataLoader:
             Mapping clean_symbol -> OHLCV DataFrame.
         """
         validate_date_range(start_date, end_date)
+        if not self.capabilities.supports(interval=interval, adjustment=adjustment):
+            raise ValueError(f"local does not support interval={interval}, adjustment={adjustment}")
         self._ensure_config()
 
         result: Dict[str, pd.DataFrame] = {}
@@ -215,6 +224,9 @@ class DataLoader:
                     start_date=start_date,
                     end_date=end_date,
                     fields=None,
+                    schema_version=BAR_SCHEMA_VERSION,
+                    provider_version=self.provider_version,
+                    adjustment=adjustment,
                     fetch=lambda c=clean: self._fetch_one(c, start_date, end_date),
                 )
                 if df is not None and not df.empty:

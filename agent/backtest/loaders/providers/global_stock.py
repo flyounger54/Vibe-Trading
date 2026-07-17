@@ -73,10 +73,12 @@ def stock_kline_yahoo(
         )
         result.append({
             "date": date_str,
-            "open": round(float(row["open"]), 2),
-            "high": round(float(row["high"]), 2),
-            "low": round(float(row["low"]), 2),
-            "close": round(float(row["close"]), 2),
+            # Preserve provider precision. Rounding belongs at the display
+            # boundary, never in the market-data acquisition layer.
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
             "volume": int(row.get("volume") or 0),
         })
     return result

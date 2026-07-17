@@ -46,7 +46,7 @@ class MarketDataTool(BaseTool):
                 ],
                 "description": (
                     "Data source. 'auto' detects from symbol format with fallback. "
-                    "astock (A-shares via mootdx+tencent), global (US/HK via "
+                    "astock (A-shares via tdxpy raw/Tencent qfq), global (US/HK via "
                     "Yahoo+Sina), tushare (A-shares+futures+fund, needs token), "
                     "okx/ccxt (crypto), local (user data bridge)."
                 ),
@@ -56,6 +56,12 @@ class MarketDataTool(BaseTool):
                 "type": "string",
                 "description": "Bar size, e.g. 1D, 1H, 4H, 30m.",
                 "default": "1D",
+            },
+            "adjustment": {
+                "type": "string",
+                "enum": ["none", "qfq", "hfq"],
+                "description": "Price adjustment semantics; fallback never changes this value.",
+                "default": "none",
             },
             "max_rows": {
                 "type": "integer",
@@ -73,5 +79,6 @@ class MarketDataTool(BaseTool):
             end_date=kwargs["end_date"],
             source=kwargs.get("source", "auto"),
             interval=kwargs.get("interval", "1D"),
+            adjustment=kwargs.get("adjustment", "none"),
             max_rows=kwargs.get("max_rows", DEFAULT_MAX_ROWS),
         )

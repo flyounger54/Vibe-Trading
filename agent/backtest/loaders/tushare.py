@@ -11,6 +11,7 @@ import pandas as pd
 
 from backtest.loaders.base import cached_loader_fetch, validate_date_range
 from backtest.loaders.registry import register
+from backtest.loaders.platform import Adjustment, BAR_SCHEMA_VERSION, ProviderCapabilities
 
 
 TUSHARE_TOKEN_PLACEHOLDERS = {"", "your-tushare-token"}
@@ -23,6 +24,12 @@ class DataLoader:
     name = "tushare"
     markets = {"a_share", "futures", "fund"}
     requires_auth = True
+    provider_version = "tushare-pro-v1"
+    capabilities = ProviderCapabilities(
+        intervals=frozenset({"1D", "1m", "5m", "15m", "30m", "1H"}),
+        adjustments=frozenset({Adjustment.NONE}),
+        supports_pagination=True,
+    )
 
     def is_available(self) -> bool:
         """Available when TUSHARE_TOKEN is set."""
@@ -42,6 +49,7 @@ class DataLoader:
         end_date: str,
         fields: Optional[List[str]] = None,
         interval: str = "1D",
+        adjustment: str = "none",
     ) -> Dict[str, pd.DataFrame]:
         """Fetch A-share bars via Tushare API.
 
@@ -56,6 +64,8 @@ class DataLoader:
             Mapping code -> OHLCV DataFrame.
         """
         validate_date_range(start_date, end_date)
+        if not self.capabilities.supports(interval=interval, adjustment=adjustment):
+            raise ValueError(f"tushare does not support interval={interval}, adjustment={adjustment}")
 
         if interval != "1D":
             return self._fetch_minutes(codes, start_date, end_date, interval)
@@ -89,6 +99,9 @@ class DataLoader:
                 start_date=start_date,
                 end_date=end_date,
                 fields=cache_fields,
+                schema_version=BAR_SCHEMA_VERSION,
+                provider_version=self.provider_version,
+                adjustment=adjustment,
                 fetch=_fetch_one,
             )
             if df is not None and not df.empty:

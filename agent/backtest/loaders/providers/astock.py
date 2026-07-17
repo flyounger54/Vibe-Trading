@@ -1,11 +1,12 @@
-"""A-share data providers: mootdx (TCP) + Tencent Finance (HTTP).
+"""A-share data providers: TDX TCP + Tencent Finance (HTTP).
 
 Extracted from a-stock-data SKILL.md v3.2.3. Both sources are free,
 no-auth, and not subject to IP bans — safe for high-frequency calls.
 
-mootdx: TCP binary protocol on port 7709, provides OHLCV klines at all
+TDX (via tdxpy): TCP binary protocol on port 7709, provides OHLCV klines at all
 intervals (1m through monthly). Uses ``tdx_client()`` with 3-level
-fallback to work around the mootdx 0.11.x BESTIP bug.
+server fallback. The legacy mootdx package is intentionally not imported:
+0.11.7 pins httpx<0.26 while Vibe-Trading requires httpx>=0.28.
 
 Tencent Finance: HTTP GET via ifzq.gtimg.cn, provides forward-adjusted
 daily klines. Used as fallback when mootdx TCP is unreachable (e.g.
@@ -18,7 +19,6 @@ import json
 import logging
 import socket
 import urllib.request
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,29 +47,25 @@ def _probe(ip: str, port: int, timeout: float = 2.0) -> bool:
 
 
 def tdx_client(market: str = "std"):
-    """Create a mootdx client with 3-level fallback for the 0.11.x BESTIP bug.
-
-    1) TCP-probe built-in server list, use first reachable;
-    2) Fall back to mootdx bestip auto-discovery;
-    3) Fall back to bare factory (works when config already has a valid IP);
-    4) Raise RuntimeError with clear message.
-    """
-    from mootdx.quotes import Quotes
+    """Create a connected tdxpy client using the first reachable server."""
+    if market != "std":
+        raise ValueError(f"unsupported TDX market: {market}")
+    try:
+        from tdxpy.hq import TdxHq_API
+    except ImportError as exc:
+        raise RuntimeError(
+            "A股原始行情需要可选依赖 tdxpy；请安装 `vibe-trading-ai[ashare]`"
+        ) from exc
 
     for ip, port in _TDX_SERVERS:
         if _probe(ip, port):
-            return Quotes.factory(market=market, server=(ip, port))
-    try:
-        return Quotes.factory(market=market, bestip=True)
-    except Exception:
-        pass
-    try:
-        return Quotes.factory(market=market)
-    except Exception as e:
-        raise RuntimeError(
-            "所有 mootdx 服务器均不可达。海外网络通常全部超时（TCP 7709），"
-            "请走国内代理或更新 _TDX_SERVERS 列表。原始错误：%s" % e
-        )
+            client = TdxHq_API(heartbeat=True, auto_retry=True, raise_exception=True)
+            if client.connect(ip, port, time_out=5):
+                return client
+    raise RuntimeError(
+        "所有 TDX 服务器均不可达。海外网络通常全部超时（TCP 7709），"
+        "请走国内代理或更新 _TDX_SERVERS 列表。"
+    )
 
 
 def get_prefix(code: str) -> str:
@@ -97,7 +93,7 @@ def mootdx_kline(
     end_date: str,
     interval: str = "1D",
 ) -> list[dict]:
-    """Fetch A-share klines via mootdx TCP.
+    """Fetch A-share klines via the TDX protocol using tdxpy.
 
     Args:
         symbol: 6-digit code (e.g. "600519").
@@ -136,11 +132,11 @@ def mootdx_kline(
     end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
     chunks: list[pd.DataFrame] = []
     for page in range(_MAX_PAGES):
-        df = client.bars(
-            symbol=symbol,
-            frequency=freq,
-            start=page * _BARS_PAGE,
-            offset=_BARS_PAGE,
+        market_code = 1 if symbol.startswith(("5", "6", "9")) else 0
+        df = client.to_df(
+            client.get_security_bars(
+                freq, market_code, symbol, page * _BARS_PAGE, _BARS_PAGE
+            )
         )
         if df is None or df.empty:
             break

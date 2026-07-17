@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Node 4 deterministic multi-market data-platform acceptance gate.
+set -u
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHON_BIN=${VIBE_PYTHON:-$ROOT/.venv/bin/python}
+MODE=${1:---full}
+RESULT=0
+
+case "$MODE" in --quick|--full) ;; *) echo "Usage: scripts/node4-acceptance [--quick|--full]" >&2; exit 2 ;; esac
+
+run_step() {
+  label=$1; shift
+  printf '\n== %s ==\n' "$label"
+  if "$@"; then printf '[PASS] %s\n' "$label"; else printf '[FAIL] %s\n' "$label" >&2; RESULT=1; fi
+}
+
+cd "$ROOT" || exit 1
+export PYTHONPATH="$ROOT/agent${PYTHONPATH:+:$PYTHONPATH}"
+
+run_step "Backend exact collection gate (4401)" \
+  "$PYTHON_BIN" scripts/check_node0_collection.py \
+  wiki/docs/upgrade/node-2-known-collection-errors.txt 4401
+run_step "Node 4 provider, fixture, quality, fallback, and cache contracts" \
+  "$PYTHON_BIN" -m pytest -q \
+  agent/tests/test_node4_provider_platform.py \
+  agent/tests/test_node4_cache_governance.py \
+  agent/tests/test_node4_data_tool_provenance.py
+run_step "Loader and public market-data compatibility regressions" \
+  "$PYTHON_BIN" -m pytest -q \
+  agent/tests/test_registry.py agent/tests/test_astock_loader.py \
+  agent/tests/test_global_loader.py agent/tests/test_market_data.py \
+  agent/tests/test_market_data_tool.py agent/tests/test_get_market_data_size.py \
+  agent/tests/test_get_market_data_unresolved.py agent/tests/test_ccxt_loader_bounded.py \
+  agent/tests/test_okx_loader_bounded.py agent/tests/test_local_loader.py
+run_step "Node 4 changed-surface Ruff gate" "$PYTHON_BIN" -m ruff check \
+  agent/backtest/loaders agent/src/agent/tools.py agent/src/market_data.py agent/src/tools/market_data_tool.py \
+  agent/mcp_server.py agent/tests/test_node4_provider_platform.py \
+  agent/tests/test_node4_cache_governance.py scripts/node4-provider-canary.py
+
+if [ "$MODE" = "--full" ]; then
+  run_step "Backend full regression" "$PYTHON_BIN" -m pytest -q --tb=short
+  run_step "Frontend production build" sh -c 'cd "$1/frontend" && npm run build' _ "$ROOT"
+  run_step "Frontend exact gate (28 files, 227 tests)" "$PYTHON_BIN" \
+    scripts/check_node0_frontend.py wiki/docs/upgrade/node-2-known-frontend-failures.txt 28 227
+fi
+
+printf '\nNode 4 acceptance %s exit: %s\n' "$MODE" "$RESULT"
+exit "$RESULT"

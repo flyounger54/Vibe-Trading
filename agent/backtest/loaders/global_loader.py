@@ -8,6 +8,7 @@ at all intervals. Sina Finance serves as a US-only daily fallback.
 from __future__ import annotations
 
 import logging
+import importlib.util
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -20,6 +21,7 @@ from backtest.loaders.providers.global_stock import (
     us_stock_kline_sina,
 )
 from backtest.loaders.registry import register
+from backtest.loaders.platform import Adjustment, BAR_SCHEMA_VERSION, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +56,14 @@ class DataLoader:
     name = "global"
     markets = {"us_equity", "hk_equity"}
     requires_auth = False
+    provider_version = "global-yahoo-sina-v1"
+    capabilities = ProviderCapabilities(
+        intervals=frozenset({"1D", "1W", "1M", "1m", "5m", "15m", "30m", "1H"}),
+        adjustments=frozenset({Adjustment.NONE}),
+    )
 
     def is_available(self) -> bool:
-        return True
+        return importlib.util.find_spec("requests") is not None
 
     def fetch(
         self,
@@ -66,8 +73,11 @@ class DataLoader:
         *,
         interval: str = "1D",
         fields: Optional[List[str]] = None,
+        adjustment: str = "none",
     ) -> Dict[str, pd.DataFrame]:
         validate_date_range(start_date, end_date)
+        if not self.capabilities.supports(interval=interval, adjustment=adjustment):
+            raise ValueError(f"global does not support interval={interval}, adjustment={adjustment}")
 
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:
@@ -82,6 +92,9 @@ class DataLoader:
                     start_date=start_date,
                     end_date=end_date,
                     fields=None,
+                    schema_version=BAR_SCHEMA_VERSION,
+                    provider_version=self.provider_version,
+                    adjustment=adjustment,
                     fetch=lambda c=code: self._fetch_one(c, start_date, end_date, interval),
                 )
                 if df is not None and not df.empty:

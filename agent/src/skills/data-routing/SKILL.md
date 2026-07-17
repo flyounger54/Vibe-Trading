@@ -19,7 +19,7 @@ per-source skill.
 
 | Source | Markets | Auth (env key) | Network | Skill |
 |--------|---------|----------------|---------|-------|
-| astock | A-shares | No | mootdx TCP, Tencent HTTP fallback | data-routing |
+| astock | A-shares | No | tdxpy TDX TCP (raw), Tencent HTTP (explicit qfq) | data-routing |
 | global | US and HK stocks | No | Yahoo HTTP, Sina daily fallback | data-routing |
 | tushare | A-shares, funds, futures, macro | Yes (`TUSHARE_TOKEN`) | China network | tushare |
 | okx | Crypto (OKX exchange) | No | Needs okx.com access | okx-market |
@@ -78,7 +78,8 @@ same-market sources automatically. Only set a concrete source when the user asks
 
 ### Source priority (for OHLCV by market)
 
-- **A-shares**: astock (mootdx, then Tencent) > tushare (`TUSHARE_TOKEN`) > local.
+- **A-shares raw**: astock/tdxpy > tushare (`TUSHARE_TOKEN`) > local. **qfq**:
+  astock/Tencent only. A fallback never changes raw/qfq/hfq semantics.
 - **US stocks**: global (Yahoo, then Sina for daily bars) > local.
 - **HK stocks**: global (Yahoo) > local.
 - **Crypto**: okx (single exchange) > ccxt (multi-exchange).

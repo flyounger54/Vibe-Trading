@@ -99,19 +99,25 @@ def test_primary_mootdx_path_returns_canonical_frame() -> None:
     tencent.assert_not_called()
 
 
-@pytest.mark.parametrize("primary", [[], RuntimeError("tcp unavailable")])
-def test_tencent_is_used_when_mootdx_cannot_serve(primary: object) -> None:
-    primary_patch = (
-        patch.object(astock_loader, "mootdx_kline", return_value=primary)
-        if isinstance(primary, list)
-        else patch.object(astock_loader, "mootdx_kline", side_effect=primary)
-    )
-    with primary_patch, patch.object(
+def test_tencent_is_used_only_for_explicit_qfq_request() -> None:
+    with patch.object(astock_loader, "mootdx_kline") as mootdx, patch.object(
+        astock_loader, "tencent_kline", return_value=_rows(12.5)
+    ) as tencent:
+        result = DataLoader().fetch(
+            ["600519.SH"], "2024-01-01", "2024-01-31", adjustment="qfq"
+        )
+    assert result["600519.SH"].iloc[0]["close"] == pytest.approx(12.5)
+    tencent.assert_called_once_with("600519", "2024-01-01", "2024-01-31")
+    mootdx.assert_not_called()
+
+
+def test_raw_request_never_falls_through_to_qfq_tencent() -> None:
+    with patch.object(astock_loader, "mootdx_kline", return_value=[]), patch.object(
         astock_loader, "tencent_kline", return_value=_rows(12.5)
     ) as tencent:
         result = DataLoader().fetch(["600519.SH"], "2024-01-01", "2024-01-31")
-    assert result["600519.SH"].iloc[0]["close"] == pytest.approx(12.5)
-    tencent.assert_called_once_with("600519", "2024-01-01", "2024-01-31")
+    assert result == {}
+    tencent.assert_not_called()
 
 
 def test_one_failed_symbol_does_not_abort_batch() -> None:

@@ -13,6 +13,7 @@ import logging
 from typing import Any, Type
 
 from backtest.loaders.base import NoAvailableSourceError
+from backtest.loaders.platform import BarRequest, FetchReport, ProviderRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +110,84 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 }
 
 
+class FallbackLoader:
+    """Compatibility adapter exposing per-symbol fallback as a DataLoader.
+
+    Existing backtest and tool call sites still receive a loader with ``name``
+    and ``fetch``. The adapter delegates execution to :class:`ProviderRegistry`
+    and retains the structured report for observability.
+    """
+
+    requires_auth = False
+
+    def __init__(self, market: str, *, preferred: str | None = None) -> None:
+        self.market = market
+        self.markets = {market}
+        self.preferred = preferred
+        self.name = preferred or (FALLBACK_CHAINS.get(market) or ["auto"])[0]
+        self.last_report: FetchReport | None = None
+        self._registry = ProviderRegistry(
+            providers=LOADER_REGISTRY,
+            fallback_chains=FALLBACK_CHAINS,
+        )
+
+    def is_available(self) -> bool:
+        return any(_loader_is_available(name) for name in self._candidate_names())
+
+    def _candidate_names(self) -> list[str]:
+        chain = list(FALLBACK_CHAINS.get(self.market, ()))
+        if self.preferred:
+            return [self.preferred, *(name for name in chain if name != self.preferred)]
+        return chain
+
+    def fetch(
+        self,
+        codes: list[str],
+        start_date: str,
+        end_date: str,
+        *,
+        interval: str = "1D",
+        fields: list[str] | None = None,
+        adjustment: str = "none",
+    ) -> dict[str, Any]:
+        report = self._registry.fetch(
+            BarRequest(
+                symbols=tuple(codes),
+                market=self.market,
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval,
+                fields=tuple(fields or ()),
+                adjustment=adjustment,
+            ),
+            preferred=self.preferred,
+        )
+        self.last_report = report
+        for symbol, failure in report.failures.items():
+            logger.warning("market data failed for %s: %s", symbol, failure.reason)
+        return report.data
+
+
+def _loader_is_available(name: str) -> bool:
+    loader_cls = LOADER_REGISTRY.get(name)
+    if loader_cls is None:
+        return False
+    try:
+        return bool(loader_cls().is_available())
+    except Exception as exc:  # noqa: BLE001 - availability must not abort fallback
+        logger.debug("loader %s failed availability check: %s", name, exc)
+        return False
+
+
+def _first_available_name(market: str) -> str | None:
+    for name in FALLBACK_CHAINS.get(market, ()):
+        if _loader_is_available(name):
+            return name
+    return None
+
+
 def resolve_loader(market: str) -> Any:
-    """Return the first *available* loader instance for *market*.
+    """Return a loader that applies the market fallback chain per symbol.
 
     Walks the fallback chain and returns the first loader whose
     ``is_available()`` returns ``True``.
@@ -126,24 +203,12 @@ def resolve_loader(market: str) -> Any:
     """
     _ensure_registered()
     chain = FALLBACK_CHAINS.get(market, [])
-    tried: list[str] = []
-    for name in chain:
-        if name not in LOADER_REGISTRY:
-            continue
-        tried.append(name)
-        # Issue #50 — some loaders (e.g. Tushare) call into the SDK during
-        # __init__ and raise on missing credentials. Treat that the same as
-        # is_available()=False so the fallback chain keeps walking.
-        try:
-            loader = LOADER_REGISTRY[name]()
-        except Exception as exc:
-            logger.debug("loader %s failed to construct: %s", name, exc)
-            continue
-        if loader.is_available():
-            return loader
+    primary = _first_available_name(market)
+    if primary is not None:
+        return FallbackLoader(market, preferred=primary)
     raise NoAvailableSourceError(
         f"No available data source for market '{market}'. "
-        f"Tried: {tried or chain}. Check network and API token config."
+        f"Tried: {chain}. Check dependencies, network, and API token config."
     )
 
 
@@ -187,15 +252,13 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
 
     # Source unavailable — try same-market fallback
     for market in loader_cls.markets:
-        try:
-            fallback = resolve_loader(market)
+        fallback_name = _first_available_name(market)
+        if fallback_name is not None:
             logger.warning(
                 "%s is unavailable, falling back to %s for market %s",
-                source, fallback.name, market,
+                source, fallback_name, market,
             )
-            return type(fallback)
-        except NoAvailableSourceError:
-            continue
+            return LOADER_REGISTRY[fallback_name]
 
     raise NoAvailableSourceError(
         f"Data source '{source}' is unavailable and no fallback found."

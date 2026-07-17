@@ -100,10 +100,11 @@ deepseek = [
     "langchain-deepseek>=1.0.0,<2",
 ]
 ashare = [
-    # Free, no-auth A-share source over BaoStock's TCP protocol; bypasses the
-    # HTTP CDN IP blocks that affect eastmoney-backed sources. The Tencent
-    # A-share loader needs no extra dependency (stdlib HTTP only).
-    "baostock>=0.8.8",
+    # mootdx 0.11.7 pins httpx<0.26 and cannot coexist with the application's
+    # httpx>=0.28 stack. tdxpy is its underlying maintained TDX transport and
+    # provides the same no-auth TCP market-data capability without that conflict.
+    # Tencent qfq daily data needs no extra dependency (stdlib HTTP only).
+    "tdxpy>=0.2.5,<0.3.0",
 ]
 harmonic = [
     "pyharmonics>=1.5.0",

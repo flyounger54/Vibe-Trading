@@ -1,0 +1,27 @@
+name: Market Data Provider Canary
+
+on:
+  schedule:
+    - cron: "17 21 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install locked runtime
+        run: |
+          pip install -r requirements.lock
+          pip install --no-deps -e .
+      - name: Probe real providers (alert only)
+        env:
+          PYTHONPATH: agent
+          OKX_TIMEOUT_S: "8"
+          OKX_FETCH_BUDGET_S: "20"
+        run: python scripts/node4-provider-canary.py --alert-only

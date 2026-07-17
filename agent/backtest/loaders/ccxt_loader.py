@@ -23,6 +23,7 @@ from backtest.loaders.base import (
     validate_date_range,
 )
 from backtest.loaders.registry import register
+from backtest.loaders.platform import Adjustment, BAR_SCHEMA_VERSION, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,12 @@ class DataLoader:
     name = "ccxt"
     markets = {"crypto"}
     requires_auth = False
+    provider_version = "ccxt-v4"
+    capabilities = ProviderCapabilities(
+        intervals=frozenset(_INTERVAL_MAP),
+        adjustments=frozenset({Adjustment.NONE}),
+        supports_pagination=True,
+    )
 
     def is_available(self) -> bool:
         """Available if ccxt is installed."""
@@ -104,6 +111,7 @@ class DataLoader:
         *,
         interval: str = "1D",
         fields: Optional[List[str]] = None,
+        adjustment: str = "none",
     ) -> Dict[str, pd.DataFrame]:
         """Fetch crypto OHLCV via CCXT.
 
@@ -119,7 +127,9 @@ class DataLoader:
         """
         validate_date_range(start_date, end_date)
 
-        timeframe = _INTERVAL_MAP.get(interval, "1d")
+        if not self.capabilities.supports(interval=interval, adjustment=adjustment):
+            raise ValueError(f"ccxt does not support interval={interval}, adjustment={adjustment}")
+        timeframe = _INTERVAL_MAP[interval]
         since_ms = int(pd.Timestamp(start_date).timestamp() * 1000)
         end_ms = int((pd.Timestamp(end_date) + pd.Timedelta(days=1)).timestamp() * 1000)
 
@@ -143,6 +153,9 @@ class DataLoader:
                     start_date=start_date,
                     end_date=end_date,
                     fields=None,
+                    schema_version=BAR_SCHEMA_VERSION,
+                    provider_version=self.provider_version,
+                    adjustment=adjustment,
                     fetch=lambda ccxt_symbol=ccxt_symbol: self._fetch_one(
                         get_exchange(), ccxt_symbol, timeframe, since_ms, end_ms
                     ),

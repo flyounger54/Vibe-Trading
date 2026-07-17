@@ -149,10 +149,10 @@ def test_yahoo_provider_uses_shared_throttled_client_and_exclusive_end() -> None
     assert rows == [
         {
             "date": "2024-01-02",
-            "open": 10.12,
-            "high": 12.46,
-            "low": 9.11,
-            "close": 12.0,
+            "open": 10.123,
+            "high": 12.456,
+            "low": 9.111,
+            "close": 11.999,
             "volume": 1234,
         }
     ]

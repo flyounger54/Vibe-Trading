@@ -20,6 +20,7 @@ from backtest.loaders.base import (
     validate_date_range,
 )
 from backtest.loaders.registry import register
+from backtest.loaders.platform import Adjustment, BAR_SCHEMA_VERSION, ProviderCapabilities
 
 BASE_URL = "https://www.okx.com/api/v5"
 _MAX_PER_PAGE = 300
@@ -38,10 +39,16 @@ class DataLoader:
     name = "okx"
     markets = {"crypto"}
     requires_auth = False
+    provider_version = "okx-v5"
+    capabilities = ProviderCapabilities(
+        intervals=frozenset({"1m", "5m", "15m", "30m", "1H", "4H", "1D"}),
+        adjustments=frozenset({Adjustment.NONE}),
+        supports_pagination=True,
+    )
 
     def is_available(self) -> bool:
-        """Always available (public API, no auth)."""
-        return True
+        """Available when the HTTP transport dependency is importable."""
+        return requests is not None
 
     def __init__(self) -> None:
         """No credentials required for public candles."""
@@ -54,6 +61,7 @@ class DataLoader:
         end_date: str,
         fields: Optional[List[str]] = None,
         interval: str = "1D",
+        adjustment: str = "none",
     ) -> Dict[str, pd.DataFrame]:
         """Fetch crypto OHLCV via OKX public API.
 
@@ -72,10 +80,8 @@ class DataLoader:
         if fields:
             print(f"[WARN] OKX ignores extra fields: {fields}")
 
-        valid_intervals = {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
-        if interval not in valid_intervals:
-            print(f"[WARN] unsupported OKX interval {interval}, using 1D")
-            interval = "1D"
+        if not self.capabilities.supports(interval=interval, adjustment=adjustment):
+            raise ValueError(f"okx does not support interval={interval}, adjustment={adjustment}")
 
         codes = [c.replace("/", "-").upper() for c in codes]
 
@@ -94,6 +100,9 @@ class DataLoader:
                     start_date=start_date,
                     end_date=end_date,
                     fields=None,
+                    schema_version=BAR_SCHEMA_VERSION,
+                    provider_version=self.provider_version,
+                    adjustment=adjustment,
                     fetch=lambda symbol=symbol: self._fetch_candles(
                         symbol, start_ts, end_ts, interval, max_pages
                     ),

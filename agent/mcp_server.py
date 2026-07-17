@@ -1046,6 +1046,7 @@ def get_market_data(
     end_date: str,
     source: str = "auto",
     interval: str = "1D",
+    adjustment: str = "none",
     max_rows: int = DEFAULT_MAX_ROWS,
 ) -> str:
     """Fetch OHLCV market data for stocks, crypto, or mixed symbols.
@@ -1066,6 +1067,7 @@ def get_market_data(
         end_date: End date (YYYY-MM-DD).
         source: Data source ("auto", "yfinance", "okx", "tushare", "baostock", "tencent", "akshare", "ccxt").
         interval: Bar size (1m/5m/15m/30m/1H/4H/1D, default "1D").
+        adjustment: Price semantics: none/qfq/hfq. Fallback never changes it.
         max_rows: Per-symbol row cap (default 250) so the response stays
             within the MCP token budget. A symbol exceeding it returns an
             even-stride downsample (every step-th bar, last bar pinned)
@@ -1078,6 +1080,7 @@ def get_market_data(
         end_date=end_date,
         source=source,
         interval=interval,
+        adjustment=adjustment,
         max_rows=max_rows,
         loader_resolver=_get_loader,
     )

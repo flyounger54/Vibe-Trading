@@ -162,6 +162,8 @@ def test_fetch_explicit_source_normalizes_rows() -> None:
     rows = out["AAPL.US"]
     assert rows[0]["trade_date"] == "2026-01-01T00:00:00"  # index reset + isoformat
     assert rows[0]["close"] == 1.0
+    assert out["_meta"]["schema_version"] == "market-data-response.v1"
+    assert out["_meta"]["as_of"].endswith("+00:00")
 
 
 def test_fetch_auto_groups_by_detected_source() -> None:
