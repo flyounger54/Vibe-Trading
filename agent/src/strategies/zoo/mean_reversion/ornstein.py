@@ -37,7 +37,7 @@ __strategy_meta__ = {
     "columns_required": ["close"],
     "default_params": {"lookback": 60, "min_halflife": 5, "max_halflife": 120},
     "risk_profile": "medium",
-    "min_bars": 65,
+    "min_bars": 120,
     "reference": "Ornstein-Uhlenbeck mean-reversion model",
     "factors_used": [],
 }

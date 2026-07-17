@@ -73,6 +73,12 @@ function BrowseView() {
     return Array.from(set).sort();
   }, [alphas]);
 
+  const zooCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const alpha of alphas) counts[alpha.zoo] = (counts[alpha.zoo] || 0) + 1;
+    return counts;
+  }, [alphas]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return alphas;
@@ -98,7 +104,7 @@ function BrowseView() {
           <Layers className="h-3.5 w-3.5" aria-hidden="true" /> Alpha Zoo
         </div>
         <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-          {total > 0 ? total : 452} {i18n.t("alphaZoo.prebuiltAlpha", { count: total > 0 ? total : 452 })}
+          {loading ? i18n.t("alphaZoo.loading") : i18n.t("alphaZoo.prebuiltAlpha", { count: total })}
         </h1>
         <p className="text-sm text-muted-foreground max-w-2xl">
           Browse formula-driven cross-sectional signals from Qlib, the
@@ -127,7 +133,7 @@ function BrowseView() {
               <div className="flex items-center justify-between">
                 <Library className="h-5 w-5 text-primary" aria-hidden="true" />
                 <span className="text-xs font-mono text-muted-foreground">
-                  {z.approxCount}
+                  {zooCounts[z.id] || 0}
                 </span>
               </div>
               <h3 className="font-semibold text-sm leading-tight">{z.title}</h3>

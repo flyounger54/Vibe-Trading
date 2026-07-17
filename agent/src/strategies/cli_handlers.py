@@ -32,9 +32,10 @@ def handle_strategy_list(
         meta = s.meta
         markets = ", ".join(meta.get("universe", []))
         risk_level = meta.get("risk_profile", "?")
+        readiness = "ready" if meta.get("directly_runnable", True) else "configuration required"
         lines.append(
             f"  {sid:<28s} {meta.get('nickname', ''):<16s} "
-            f"[{s.category}] {markets}  risk={risk_level}"
+            f"[{s.category}] {markets}  risk={risk_level}  {readiness}"
         )
 
     health = reg.health()

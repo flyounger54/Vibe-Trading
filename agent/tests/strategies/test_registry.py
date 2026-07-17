@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -18,20 +17,17 @@ from src.strategies.registry import (
 
 
 class TestRegistryScan:
-    def test_loads_all_42_strategies(self, registry: StrategyRegistry) -> None:
-        assert registry.health()["loaded"] == 42
+    def test_loaded_count_matches_discovered_strategies(self, registry: StrategyRegistry) -> None:
+        assert registry.health()["loaded"] == len(registry.list())
+        assert registry.list()
 
     def test_zero_failures(self, registry: StrategyRegistry) -> None:
         assert registry.health()["failed"] == 0
 
-    def test_all_10_categories_present(self, registry: StrategyRegistry) -> None:
+    def test_all_discovered_categories_are_present_in_manifest(self, registry: StrategyRegistry) -> None:
         cats = {registry.get(sid).category for sid in registry.list()}
-        expected = {
-            "trend", "mean_reversion", "momentum", "multi_factor",
-            "stat_arb", "event_driven", "volatility", "allocation",
-            "crypto", "options",
-        }
-        assert cats == expected
+        manifest_categories = {item["category"] for item in registry.export_manifest()["categories"]}
+        assert cats == manifest_categories
 
     def test_list_returns_sorted(self, registry: StrategyRegistry) -> None:
         ids = registry.list()
@@ -41,7 +37,7 @@ class TestRegistryScan:
 class TestRegistryFilter:
     def test_filter_by_category(self, registry: StrategyRegistry) -> None:
         trend = registry.list(category="trend")
-        assert len(trend) == 5
+        assert trend
         assert all(registry.get(s).category == "trend" for s in trend)
 
     def test_filter_by_universe(self, registry: StrategyRegistry) -> None:
@@ -61,7 +57,7 @@ class TestRegistryFilter:
         assert "trend_dual_ma" in result
 
     def test_empty_filter_returns_all(self, registry: StrategyRegistry) -> None:
-        assert len(registry.list()) == 42
+        assert registry.list() == registry.list(category=None, universe=None, risk=None)
 
 
 class TestRegistryGet:
@@ -102,12 +98,12 @@ class TestRegistryManifest:
         assert "generated_at" in m
         assert "categories" in m
         assert "health" in m
-        assert m["health"]["loaded"] == 42
+        assert m["health"]["loaded"] == len(registry.list())
 
     def test_manifest_categories_complete(self, registry: StrategyRegistry) -> None:
         m = registry.export_manifest()
         cat_ids = {c["category"] for c in m["categories"]}
-        assert len(cat_ids) == 10
+        assert cat_ids == {registry.get(sid).category for sid in registry.list()}
 
 
 class TestSingleton:

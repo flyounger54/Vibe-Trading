@@ -364,7 +364,7 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "{{count}} pre-built quant alphas across 4 zoos",
+    "prebuiltAlpha": "{{count}} pre-built quant alphas",
     "browseDesc": "Browse formula-driven cross-sectional signals from Qlib, the Kakushadze 101 set, GTJA 191, and the academic anomaly literature. Click any alpha to read its formula and source code, or run a bench to score the whole zoo on a universe and period.",
     "search": "Search",
     "searchPlaceholder": "Filter by id or nickname…",
@@ -501,7 +501,7 @@
         "p1": "The ML Training module turns Alpha Zoo factors into predictive trading signals. It follows a strict pipeline designed to prevent look-ahead bias (data leakage) at every step.",
         "step1": {
           "title": "Feature Engineering",
-          "desc": "Compute alpha-zoo factors (up to 452) as features. Optionally filter via IC, correlation, SHAP, or Boruta to keep only predictive factors."
+          "desc": "Compute bundled alpha-zoo factors as features. Optionally filter via IC, correlation, SHAP, or Boruta to keep only predictive factors."
         },
         "step2": {
           "title": "Model Training",
@@ -559,7 +559,7 @@
       },
       "features": {
         "title": "Feature Selection Methods",
-        "intro": "452 raw factors contain noise and redundancy. Feature selection keeps only the factors that genuinely predict returns, improving model quality and preventing overfitting.",
+        "intro": "Raw factors contain noise and redundancy. Feature selection keeps only the factors that genuinely predict returns, improving model quality and preventing overfitting.",
         "method": "Method",
         "description": "What it does",
         "speed": "Speed",
@@ -660,7 +660,7 @@
   },
   "strategyZoo": {
     "title": "Strategy Zoo",
-    "prebuiltStrategy": "{{count}} pre-built quantitative trading strategies across 10 categories",
+    "prebuiltStrategy": "{{count}} pre-built quantitative trading strategies",
     "heroDescription": "Browse pre-built strategies covering trend-following, mean-reversion, momentum, multi-factor, stat-arb, event-driven, volatility, allocation, crypto, and options. Click any strategy to view parameters and source code.",
     "search": "Search",
     "searchPlaceholder": "Filter by id, name or description…",

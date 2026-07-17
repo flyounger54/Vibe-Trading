@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.strategy_routes import register_strategy_routes
+from src.strategies.registry import StrategyRegistry
 
 
 @pytest.fixture(scope="module")
@@ -21,8 +22,8 @@ class TestStrategyListEndpoint:
         r = client.get("/strategy/list")
         assert r.status_code == 200
         data = r.json()
-        assert data["total"] == 42
-        assert len(data["strategies"]) == 42
+        assert data["total"] == len(StrategyRegistry().list())
+        assert len(data["strategies"]) == data["total"]
 
     def test_list_filter_category(self, client: TestClient) -> None:
         r = client.get("/strategy/list?category=trend")
@@ -60,6 +61,8 @@ class TestStrategyListEndpoint:
         assert "universe" in s
         assert "risk_profile" in s
         assert "default_params" in s
+        assert "directly_runnable" in s
+        assert "configuration_requirements" in s
 
 
 class TestStrategyDetailEndpoint:
@@ -81,3 +84,4 @@ class TestStrategyDetailEndpoint:
         assert meta["category"] == "mean_reversion"
         assert "universe" in meta
         assert "default_params" in meta
+        assert "directly_runnable" in meta

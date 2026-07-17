@@ -34,7 +34,7 @@ __strategy_meta__ = {
     "columns_required": ["close"],
     "default_params": {"lookback": 60, "entry_z": 2.0, "exit_z": 0.5},
     "risk_profile": "medium",
-    "min_bars": 80,
+    "min_bars": 120,
     "reference": "Engle & Granger, Co-Integration and Error Correction, 1987",
     "factors_used": [],
 }

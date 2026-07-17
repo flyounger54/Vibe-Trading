@@ -73,7 +73,7 @@ export function BrowseView() {
           <Target className="h-3.5 w-3.5" aria-hidden="true" /> Strategy Zoo
         </div>
         <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-          {i18n.t("strategyZoo.prebuiltStrategy", { count: total > 0 ? total : 40 })}
+          {loading ? i18n.t("strategyZoo.loading") : i18n.t("strategyZoo.prebuiltStrategy", { count: total })}
         </h1>
         <p className="text-sm text-muted-foreground max-w-2xl">
           {i18n.t("strategyZoo.heroDescription")}

@@ -98,11 +98,6 @@ class SignalEngine:
         )
 
         # Step 3: Regime classification per row
-        # "Growth" proxy: cross-sectional median return
-        # "Inflation/Risk" proxy: cross-sectional median volatility
-        median_ret = ret_df.median(axis=1)
-        median_vol = vol_df.median(axis=1)
-
         # Regime score for each asset:
         # - High return + Low vol  -> strong performer in favorable regime -> high weight
         # - Low return + High vol  -> weak performer -> low weight

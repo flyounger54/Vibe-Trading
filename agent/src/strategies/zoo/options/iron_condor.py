@@ -43,7 +43,7 @@ __strategy_meta__ = {
         "range_pct": 0.05,
     },
     "risk_profile": "medium",
-    "min_bars": 55,
+    "min_bars": 100,
     "reference": "经典铁鹰期权策略",
     "factors_used": [],
 }

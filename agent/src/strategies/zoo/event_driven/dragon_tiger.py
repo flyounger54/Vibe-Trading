@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-import numpy as np
 import pandas as pd
 
 __strategy_meta__ = {
@@ -70,7 +69,6 @@ class SignalEngine:
         Uses dragon_tiger column if available; otherwise falls back to
         volume-spike heuristic.
         """
-        n = len(df)
         if "dragon_tiger" in df.columns:
             dt_col = pd.to_numeric(df["dragon_tiger"], errors="coerce")
             return dt_col.fillna(0.0) > 0

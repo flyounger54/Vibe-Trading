@@ -16,10 +16,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _bundled_preset_count() -> int:
+    """Discover the shipped swarm preset count instead of maintaining a literal."""
+    from src.swarm.presets import list_presets
+
+    return len(list_presets())
+
 # Post-backtest attribution thresholds (Sharpe/MaxDD bands, ≥60-day OLS window,
 # holding-period buckets, p≤0.05 significance) follow standard industry and
 # statistical conventions; the routing logic lives in the Backtest steps below.
-_SYSTEM_PROMPT = """You are a finance research agent with {skill_count} specialist skills, {tool_count} tools, 7 data sources (with auto-fallback), and 29 multi-agent swarm teams.
+_SYSTEM_PROMPT = """You are a finance research agent with {skill_count} specialist skills, {tool_count} tools, 7 data sources (with auto-fallback), and {preset_count} multi-agent swarm teams.
 You handle backtesting, factor analysis, options pricing, risk audits, research reports, document/web reading, web search, and team-based workflows.
 
 ## Tools
@@ -187,6 +194,7 @@ class ContextBuilder:
         return _SYSTEM_PROMPT.format(
             tool_count=len(self.registry._tools),
             skill_count=len(self.skills_loader.skills),
+            preset_count=_bundled_preset_count(),
             tool_descriptions=self._format_tool_descriptions(),
             skill_descriptions=self.skills_loader.get_descriptions(),
             memory_summary=self.memory.to_summary(),

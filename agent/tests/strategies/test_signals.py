@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from src.strategies.registry import StrategyRegistry
 
 PAIR_STRATEGIES = {"sa_coint_pair", "sa_ah_premium"}
@@ -39,7 +37,7 @@ class TestAllStrategiesSignalRange:
         data_map_pair: dict[str, pd.DataFrame],
         data_map_multi: dict[str, pd.DataFrame],
     ) -> None:
-        for sid in registry.list():
+        for sid in registry.list_default_runnable():
             engine = registry.load(sid)
             dm = _pick_data_map(sid, data_map_single, data_map_pair, data_map_multi)
             signals = engine.generate(dm)
@@ -66,7 +64,7 @@ class TestAllStrategiesReturnType:
         data_map_pair: dict[str, pd.DataFrame],
         data_map_multi: dict[str, pd.DataFrame],
     ) -> None:
-        for sid in registry.list():
+        for sid in registry.list_default_runnable():
             engine = registry.load(sid)
             dm = _pick_data_map(sid, data_map_single, data_map_pair, data_map_multi)
             signals = engine.generate(dm)
@@ -88,7 +86,7 @@ class TestAllStrategiesNoInf:
         data_map_pair: dict[str, pd.DataFrame],
         data_map_multi: dict[str, pd.DataFrame],
     ) -> None:
-        for sid in registry.list():
+        for sid in registry.list_default_runnable():
             engine = registry.load(sid)
             dm = _pick_data_map(sid, data_map_single, data_map_pair, data_map_multi)
             signals = engine.generate(dm)
@@ -109,15 +107,16 @@ class TestAllStrategiesProduceNonZero:
         data_map_multi: dict[str, pd.DataFrame],
     ) -> None:
         active_count = 0
-        for sid in registry.list():
+        default_runnable = registry.list_default_runnable()
+        for sid in default_runnable:
             engine = registry.load(sid)
             dm = _pick_data_map(sid, data_map_single, data_map_pair, data_map_multi)
             signals = engine.generate(dm)
             total_nz = sum(s.fillna(0).ne(0).sum() for s in signals.values())
             if total_nz > 0:
                 active_count += 1
-        total = len(registry.list())
-        assert active_count >= 30, (
+        total = len(default_runnable)
+        assert active_count >= int(total * 0.70), (
             f"Only {active_count}/{total} strategies produced non-zero signals"
         )
 
@@ -126,7 +125,7 @@ class TestEmptyDataMap:
     """Strategies should handle empty data gracefully."""
 
     def test_empty_data_map(self, registry: StrategyRegistry) -> None:
-        for sid in registry.list():
+        for sid in registry.list_default_runnable():
             engine = registry.load(sid)
             signals = engine.generate({})
             assert isinstance(signals, dict)

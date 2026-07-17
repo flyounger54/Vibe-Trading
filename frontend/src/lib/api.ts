@@ -780,6 +780,10 @@ export interface StrategySummary {
   min_bars: number;
   reference: string;
   default_params: Record<string, unknown>;
+  required_params: string[];
+  required_any_of: string[];
+  configuration_requirements: string[];
+  directly_runnable: boolean;
   columns_required: string[];
   factors_used: string[];
 }

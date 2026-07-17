@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -35,6 +34,12 @@ __strategy_meta__ = {
         "rebalance_days": 5,
         "use_proba": False,
     },
+    "required_params": [],
+    "required_any_of": ["model_id", "schedule_name"],
+    "configuration_requirements": [
+        "Train and persist a model, then provide model_id; or provide a saved rolling schedule_name."
+    ],
+    "directly_runnable": False,
     "risk_profile": "medium",
     "min_bars": 60,
     "reference": "ML model trained via train_model tool",

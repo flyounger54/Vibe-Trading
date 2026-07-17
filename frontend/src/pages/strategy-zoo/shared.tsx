@@ -152,15 +152,14 @@ const GUIDE_SECTIONS: GuideSection[] = [
     title: "分类卡片",
     content: (
       <div className="space-y-2 text-xs text-muted-foreground">
-        <p>页面顶部 <strong>10 个分类卡片</strong>，每个显示分类名称和策略数量。</p>
+        <p>页面顶部的<strong>分类卡片</strong>，每个显示分类名称和实时策略数量。</p>
         <p><strong>点击卡片</strong> 快速筛选该分类策略，再次点击取消筛选。</p>
         <div className="grid grid-cols-2 gap-1 mt-2">
           {[
-            ["趋势跟踪", "5"], ["均值回归", "4"], ["动量策略", "4"], ["多因子", "4"],
-            ["统计套利", "4"], ["事件驱动", "4"], ["波动率", "3"], ["组合配置", "4"],
-            ["加密货币", "4"], ["期权策略", "4"],
-          ].map(([name, n]) => (
-            <span key={name} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50">{name} ({n})</span>
+            "趋势跟踪", "均值回归", "动量策略", "多因子", "统计套利",
+            "事件驱动", "波动率", "组合配置", "加密货币", "期权策略",
+          ].map((name) => (
+            <span key={name} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50">{name}</span>
           ))}
         </div>
       </div>
@@ -178,7 +177,7 @@ const GUIDE_SECTIONS: GuideSection[] = [
             <tr className="border-b border-muted/30"><td className="py-1 font-medium text-foreground">Search</td><td className="py-1">按 ID / 中文昵称 / 描述模糊搜索</td></tr>
             <tr className="border-b border-muted/30"><td className="py-1 font-medium text-foreground">Category</td><td className="py-1">下拉选择分类（与卡片联动）</td></tr>
             <tr className="border-b border-muted/30"><td className="py-1 font-medium text-foreground">Universe</td><td className="py-1">按市场筛选：A股/美股/港股/加密/期货</td></tr>
-            <tr><td className="py-1 font-medium text-foreground">Risk</td><td className="py-1">按风险等级：low(10) / medium(20) / high(10)</td></tr>
+            <tr><td className="py-1 font-medium text-foreground">Risk</td><td className="py-1">按风险等级：low / medium / high</td></tr>
           </tbody>
         </table>
         <p className="text-[10px] text-primary/80">💡 搜索支持中英文，输入「海龟」可匹配 trend_turtle</p>
@@ -343,7 +342,7 @@ export function GuideDrawer({ open, onClose }: { open: boolean; onClose: () => v
 
         {/* Footer */}
         <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/60 shrink-0">
-          Strategy Zoo · 40 strategies · 10 categories
+          Strategy Zoo · runtime registry
         </div>
       </aside>
     </>

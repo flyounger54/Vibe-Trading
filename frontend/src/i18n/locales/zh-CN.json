@@ -364,7 +364,7 @@
   },
   "alphaZoo": {
     "title": "Alpha 动物园",
-    "prebuiltAlpha": "{{count}} 个预构建量化 Alpha，覆盖 4 个动物园",
+    "prebuiltAlpha": "{{count}} 个预构建量化 Alpha",
     "browseDesc": "浏览来自 Qlib、Kakushadze 101 公式集、GTJA 191 以及学术异象文献的公式驱动截面信号。点击任意 Alpha 查看公式和源码，或运行基准测试在特定市场和时间段上评分整个动物园。",
     "search": "搜索",
     "searchPlaceholder": "按 ID 或昵称筛选…",
@@ -501,7 +501,7 @@
         "p1": "ML 训练模块将 Alpha Zoo 因子转化为预测性交易信号。它遵循严格的流水线设计，在每一步防止前瞻偏差（数据穿越）。",
         "step1": {
           "title": "特征工程",
-          "desc": "计算 Alpha Zoo 因子（最多 452 个）作为特征。可选通过 IC、相关性、SHAP 或 Boruta 筛选，只保留有预测力的因子。"
+          "desc": "计算内置 Alpha Zoo 因子作为特征。可选通过 IC、相关性、SHAP 或 Boruta 筛选，只保留有预测力的因子。"
         },
         "step2": {
           "title": "模型训练",
@@ -559,7 +559,7 @@
       },
       "features": {
         "title": "特征筛选方法",
-        "intro": "452 个原始因子包含噪声和冗余。特征筛选只保留真正能预测收益的因子，提升模型质量并防止过拟合。",
+        "intro": "原始因子包含噪声和冗余。特征筛选只保留真正能预测收益的因子，提升模型质量并防止过拟合。",
         "method": "方法",
         "description": "功能说明",
         "speed": "速度",
@@ -660,7 +660,7 @@
   },
   "strategyZoo": {
     "title": "策略动物园",
-    "prebuiltStrategy": "{{count}} 个预构建量化交易策略，覆盖 10 大类",
+    "prebuiltStrategy": "{{count}} 个预构建量化交易策略",
     "heroDescription": "浏览涵盖趋势跟踪、均值回归、动量、多因子、统计套利、事件驱动、波动率、组合配置、加密货币和期权的预构建策略。点击任意策略查看参数和源码。",
     "search": "搜索",
     "searchPlaceholder": "按 ID、名称或描述筛选…",

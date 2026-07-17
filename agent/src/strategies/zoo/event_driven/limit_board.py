@@ -62,7 +62,6 @@ class SignalEngine:
 
     def _is_chinext_or_star(self, code: str) -> bool:
         """Heuristic: ChiNext codes start with '30', STAR with '688'."""
-        stripped = code.split(".")[0].lstrip("0")
         raw = code.split(".")[0]
         return raw.startswith("30") or raw.startswith("688")
 

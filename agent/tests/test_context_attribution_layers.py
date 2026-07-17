@@ -68,6 +68,7 @@ class TestAttributionPromptIntegrity:
         result = _SYSTEM_PROMPT.format(
             tool_count=10,
             skill_count=5,
+            preset_count=3,
             tool_descriptions="[test tools]",
             skill_descriptions="[test skills]",
             memory_summary="[test memory]",

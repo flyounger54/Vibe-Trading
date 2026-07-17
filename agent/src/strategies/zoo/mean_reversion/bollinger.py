@@ -75,9 +75,6 @@ class SignalEngine:
         mid = close.rolling(window=self.period, min_periods=self.period).mean()
         std = close.rolling(window=self.period, min_periods=self.period).std()
 
-        upper = mid + self.num_std * std
-        lower = mid - self.num_std * std
-
         # Band width: distance from mid to upper (or lower)
         band_width = self.num_std * std
 

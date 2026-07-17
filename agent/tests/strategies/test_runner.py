@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.strategies.registry import StrategyRegistry
+from src.strategies.registry import StrategyConfigurationError, StrategyRegistry
 from src.strategies.runner import compare, recommend, run
 
 
@@ -83,6 +83,13 @@ class TestRun:
     ) -> None:
         with pytest.raises(KeyError):
             run("nope", codes=["X"], run_root=tmp_run_root, registry=registry)
+
+    def test_run_requires_external_model_configuration_before_writing_artifacts(
+        self, registry: StrategyRegistry, tmp_run_root: Path
+    ) -> None:
+        with pytest.raises(StrategyConfigurationError, match="model_id.*schedule_name"):
+            run("mf_ml_predictor", codes=["000001.SZ"], run_root=tmp_run_root, registry=registry)
+        assert not tmp_run_root.exists()
 
 
 class TestCompare:

@@ -91,9 +91,6 @@ class SignalEngine:
         if not all_codes:
             return {}
 
-        # Use the first instrument's index as the reference date axis
-        ref_index = next(iter(data_map.values())).index
-
         roe_panel: Dict[str, pd.Series] = {}
         pe_panel: Dict[str, pd.Series] = {}
         for code, df in data_map.items():

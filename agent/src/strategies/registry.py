@@ -2,7 +2,7 @@
 
 Design contract (mirrors ``src/factors/registry.py``):
     StrategyMeta (pydantic, ``extra="forbid", frozen=True``)
-    StrategyRegistry.list(category=None, universe=None, risk=None) -> list[str]
+    StrategyRegistry.list(category=None, universe=None, risk=None, directly_runnable=None) -> list[str]
     StrategyRegistry.get(strategy_id) -> Strategy
     StrategyRegistry.load(strategy_id, **params) -> SignalEngine instance
     StrategyRegistry.health() -> dict
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.strategies.base import Strategy
 
@@ -65,14 +65,35 @@ class StrategyMeta(BaseModel):
     frequency: list[str]
     columns_required: list[str]
     default_params: dict[str, Any] = Field(default_factory=dict)
+    required_params: list[str] = Field(default_factory=list)
+    required_any_of: list[str] = Field(default_factory=list)
+    configuration_requirements: list[str] = Field(default_factory=list)
+    directly_runnable: bool = True
     risk_profile: RiskProfile
     min_bars: int = Field(ge=0)
     reference: str = ""
     factors_used: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _validate_run_contract(self) -> "StrategyMeta":
+        """Require an actionable explanation for non-default strategies."""
+        if not self.directly_runnable and not (
+            self.required_params
+            or self.required_any_of
+            or self.configuration_requirements
+        ):
+            raise ValueError(
+                "non-default-runnable strategies require parameter or configuration metadata"
+            )
+        return self
+
 
 class RegistryError(Exception):
     """Raised on registry-level configuration errors."""
+
+
+class StrategyConfigurationError(RegistryError):
+    """Raised when a strategy needs explicit configuration before it can run."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +105,11 @@ class _LoadError:
 def _validate_id_token(token: str, kind: str) -> None:
     if not _ID_RE.fullmatch(token):
         raise RegistryError(f"invalid {kind} {token!r}: must match {_ID_RE.pattern}")
+
+
+def _has_configured_value(value: Any) -> bool:
+    """Return whether a parameter is explicitly usable as a runtime setting."""
+    return value is not None and value != ""
 
 
 def load_strategy_meta_from_py(path: Path) -> StrategyMeta:
@@ -181,6 +207,7 @@ class StrategyRegistry:
         category: str | None = None,
         universe: str | None = None,
         risk: str | None = None,
+        directly_runnable: bool | None = None,
     ) -> list[str]:
         """Return strategy IDs matching the (optional) filters."""
         out: list[str] = []
@@ -191,8 +218,17 @@ class StrategyRegistry:
                 continue
             if risk is not None and s.meta.get("risk_profile") != risk:
                 continue
+            if (
+                directly_runnable is not None
+                and bool(s.meta.get("directly_runnable", True)) is not directly_runnable
+            ):
+                continue
             out.append(s.id)
         return sorted(out)
+
+    def list_default_runnable(self) -> list[str]:
+        """Return strategies that can generate meaningful signals with defaults."""
+        return self.list(directly_runnable=True)
 
     def get(self, strategy_id: str) -> Strategy:
         if strategy_id not in self._strategies:
@@ -219,15 +255,42 @@ class StrategyRegistry:
         except OSError as exc:
             raise RegistryError(f"{strategy_id}: cannot read source: {exc}") from exc
 
+    def validate_params(self, strategy_id: str, **params: Any) -> dict[str, Any]:
+        """Merge parameters and reject missing declared prerequisites early."""
+        strategy = self.get(strategy_id)
+        meta = strategy.meta
+        merged_params = {**meta.get("default_params", {}), **params}
+
+        missing = [
+            name
+            for name in meta.get("required_params", [])
+            if not _has_configured_value(merged_params.get(name))
+        ]
+        any_of = meta.get("required_any_of", [])
+        missing_any_of = bool(any_of) and not any(
+            _has_configured_value(merged_params.get(name)) for name in any_of
+        )
+        if missing or missing_any_of:
+            details: list[str] = []
+            if missing:
+                details.append("required parameters: " + ", ".join(missing))
+            if missing_any_of:
+                details.append("one of: " + ", ".join(any_of))
+            requirements = meta.get("configuration_requirements", [])
+            if requirements:
+                details.append("configuration: " + "; ".join(requirements))
+            raise StrategyConfigurationError(
+                f"{strategy_id}: cannot run with defaults; " + " | ".join(details)
+            )
+        return merged_params
+
     def load(self, strategy_id: str, **params: Any) -> Any:
         """Lazy-import the strategy module and instantiate its ``SignalEngine``.
 
         Override default_params with caller-supplied ``params``.
         """
         strategy = self.get(strategy_id)
-        meta = strategy.meta
-
-        merged_params = {**meta.get("default_params", {}), **params}
+        merged_params = self.validate_params(strategy_id, **params)
 
         try:
             module = self._load_module(strategy)

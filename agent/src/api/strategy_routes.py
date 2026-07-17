@@ -46,6 +46,10 @@ def register_strategy_routes(app: FastAPI) -> None:
                 "min_bars": meta.get("min_bars", 0),
                 "reference": meta.get("reference", ""),
                 "default_params": meta.get("default_params", {}),
+                "required_params": meta.get("required_params", []),
+                "required_any_of": meta.get("required_any_of", []),
+                "configuration_requirements": meta.get("configuration_requirements", []),
+                "directly_runnable": meta.get("directly_runnable", True),
                 "columns_required": meta.get("columns_required", []),
                 "factors_used": meta.get("factors_used", []),
             })

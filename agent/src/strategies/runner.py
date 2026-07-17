@@ -11,9 +11,7 @@ import logging
 import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
-
-import pandas as pd
+from typing import Any
 
 from src.strategies.registry import StrategyRegistry, get_default_registry
 
@@ -81,7 +79,10 @@ def run(
     effective_end = end_date or today
     effective_start = start_date or str(int(today[:4]) - 10) + today[4:]
 
-    merged_params = {**meta.get("default_params", {}), **(params or {})}
+    # Validate prerequisites before creating any run artifacts.  In particular,
+    # model-backed strategies must never produce a run directory that only fails
+    # later when the generated shim is imported by the backtest worker.
+    merged_params = reg.validate_params(strategy_id, **(params or {}))
 
     root = run_root or _default_run_root()
     run_dir = root / f"{strategy_id}_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -165,5 +166,5 @@ def recommend(
 ) -> list[dict[str, Any]]:
     """Recommend strategies matching universe and risk preference."""
     reg = registry or get_default_registry()
-    ids = reg.list(universe=universe, risk=risk)
+    ids = reg.list(universe=universe, risk=risk, directly_runnable=True)
     return [reg.get(sid).meta for sid in ids]

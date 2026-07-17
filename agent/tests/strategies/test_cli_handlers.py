@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from src.strategies.cli_handlers import (
-    handle_strategy_compare,
     handle_strategy_info,
     handle_strategy_list,
     handle_strategy_recommend,
 )
+from src.strategies.registry import StrategyRegistry
 
 
 class TestHandleStrategyList:
     def test_list_all(self) -> None:
         out = handle_strategy_list()
-        assert "Found 42 strategies" in out
+        assert f"Found {len(StrategyRegistry().list())} strategies" in out
         assert "trend_dual_ma" in out
 
     def test_list_filtered(self) -> None:

@@ -29,7 +29,7 @@ __alpha_meta__ = {
         r"0.6 \cdot \mathrm{zscore}_{20}\!\left(\frac{V_t}{\bar{V}_{20}}\right)"
         r" + 0.4 \cdot \mathrm{zscore}_{20}\!\left(\frac{\bar{V}_{5} - \bar{V}_{20}}{\bar{V}_{20}}\right)"
     ),
-    "columns_required": ["close", "volume"],
+    "columns_required": ["volume"],
     "universe": ["equity_cn"],
     "frequency": ["1d"],
     "decay_horizon": 20,
@@ -62,11 +62,10 @@ def compute(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
     weight_turnover = 0.6
     weight_acceleration = 0.4
 
-    volume = panel["close"] * 0  # shape template
-    if "volume" in panel:
-        volume = panel["volume"].astype(float)
-    else:
-        return volume * np.nan
+    # The registry enforces the declared input contract before calling us.
+    # Never substitute a fetched/ambient data source: this alpha is a pure
+    # transform of its explicit volume panel.
+    volume = panel["volume"].astype(float)
 
     vol_ma_long = volume.rolling(window=long_window, min_periods=10).mean()
     vol_ma_long_safe = vol_ma_long.where(vol_ma_long > 0)

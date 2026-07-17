@@ -166,10 +166,6 @@ class SignalEngine:
         val_scores = _compute_value_score(close_panel, self.lookback)
         vol_scores = _compute_volatility_score(close_panel, self.lookback)
 
-        # Forward 1-bar return for IC computation (shifted so no lookahead)
-        fwd_ret = close_panel.shift(-1) / close_panel - 1.0
-        fwd_ret_rank = fwd_ret.rank(axis=1, pct=True, na_option="keep")
-
         # Shift factor scores forward by 1 bar for IC alignment:
         # IC_t uses factor from t-1 and return from t-1 to t
         mom_shifted = mom_scores.shift(1)
