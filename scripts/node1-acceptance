@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Node 1 contract-recovery acceptance gate. This script never installs dependencies.
+#
+# Usage:
+#   scripts/node1-acceptance --quick  # environment + doctor + exact collection counts
+#   scripts/node1-acceptance --full   # quick + complete backend/frontend regression
+
+set -u
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+AGENT_DIR="$ROOT/agent"
+FRONTEND_DIR="$ROOT/frontend"
+MODE=${1:---full}
+RESULT=0
+
+case "$MODE" in
+  --quick|--full) ;;
+  -h|--help)
+    sed -n '2,7p' "$0"
+    exit 0
+    ;;
+  *) echo "Usage: scripts/node1-acceptance [--quick|--full]" >&2; exit 2 ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+  echo "Only one mode flag is accepted." >&2
+  exit 2
+fi
+
+if [ -n "${VIBE_PYTHON:-}" ]; then
+  PYTHON_BIN=$VIBE_PYTHON
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN="$ROOT/.venv/bin/python"
+else
+  PYTHON_BIN=$(command -v python3 2>/dev/null || true)
+fi
+
+if [ -n "${VIBE_NPM:-}" ]; then
+  NPM_BIN=$VIBE_NPM
+else
+  NPM_BIN=$(command -v npm 2>/dev/null || true)
+fi
+
+run_step() {
+  label=$1
+  shift
+  started=$(date +%s)
+  printf '\n== %s ==\n' "$label"
+  "$@"
+  rc=$?
+  elapsed=$(( $(date +%s) - started ))
+  if [ "$rc" -eq 0 ]; then
+    printf '[PASS] %s (%ss)\n' "$label" "$elapsed"
+  else
+    printf '[FAIL] %s exited %s (%ss)\n' "$label" "$rc" "$elapsed" >&2
+    RESULT=1
+  fi
+}
+
+if [ -z "${PYTHON_BIN:-}" ] || [ ! -x "$PYTHON_BIN" ]; then
+  echo "Python executable not found; set VIBE_PYTHON" >&2
+  exit 2
+fi
+
+cd "$ROOT" || exit 1
+export PYTHONPATH="$AGENT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+run_step "Node 1 environment, compile, doctor, and gate-unit checks" \
+  env VIBE_PYTHON="$PYTHON_BIN" scripts/node0-baseline --quick
+run_step "Backend exact collection gate (4302, zero errors)" \
+  "$PYTHON_BIN" scripts/check_node0_collection.py \
+  wiki/docs/upgrade/node-1-known-collection-errors.txt 4302
+
+if [ "$MODE" = --full ]; then
+  run_step "Backend full regression" "$PYTHON_BIN" -m pytest -q --tb=short \
+    --ignore=agent/tests/e2e_backtest \
+    --ignore=agent/tests/test_e2e_harness_v2.py
+
+  if [ -z "${NPM_BIN:-}" ] || [ ! -x "$NPM_BIN" ]; then
+    echo "npm executable not found; set VIBE_NPM" >&2
+    RESULT=1
+  else
+    run_step "Frontend production build" bash -c \
+      'cd "$1" && "$2" run build' _ "$FRONTEND_DIR" "$NPM_BIN"
+    run_step "Frontend exact test gate (27 files, 227 tests, zero failures)" \
+      "$PYTHON_BIN" scripts/check_node0_frontend.py \
+      wiki/docs/upgrade/node-1-known-frontend-failures.txt 27 227
+  fi
+fi
+
+printf '\nNode 1 acceptance %s exit: %s\n' "$MODE" "$RESULT"
+exit "$RESULT"

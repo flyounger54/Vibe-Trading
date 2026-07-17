@@ -12,8 +12,13 @@ describe("WelcomeScreen", () => {
     expect(screen.getByText("Vibe-Trading")).toBeInTheDocument();
   });
 
-  it("renders capability chips", () => {
+  it("reveals capability chips when the capability toggle is opened", async () => {
     render(<WelcomeScreen onExample={onExample} />);
+    const user = userEvent.setup();
+
+    expect(screen.queryByText("Finance Skills Library")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "15 capabilities" }));
+
     expect(screen.getByText("Finance Skills Library")).toBeInTheDocument();
     expect(screen.getByText("Swarm Agent Teams")).toBeInTheDocument();
     expect(screen.getByText("Shadow Account Backtest")).toBeInTheDocument();

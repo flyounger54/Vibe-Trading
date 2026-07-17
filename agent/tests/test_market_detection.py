@@ -85,17 +85,17 @@ class TestDetectMarket:
 
 
 class TestDetectSource:
-    """Market type → legacy source name."""
+    """Market type → canonical consolidated source name."""
 
     @pytest.mark.parametrize(
         "code, expected_source",
         [
-            ("000001.SZ", "tushare"),
-            ("AAPL.US", "yfinance"),
-            ("0700.HK", "yfinance"),
+            ("000001.SZ", "astock"),
+            ("AAPL.US", "global"),
+            ("0700.HK", "global"),
             ("BTC-USDT", "okx"),
             ("IF2406.CFFEX", "tushare"),
-            ("EUR/USD", "akshare"),
+            ("EUR/USD", "local"),
         ],
     )
     def test_source_mapping(self, code: str, expected_source: str) -> None:
@@ -128,8 +128,8 @@ class TestGroupCodes:
     def test_group_by_source(self) -> None:
         codes = ["000001.SZ", "AAPL.US"]
         groups = _group_codes_by_source(codes)
-        assert "tushare" in groups
-        assert "yfinance" in groups
+        assert "astock" in groups
+        assert "global" in groups
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ class TestNormalizeCodes:
     def test_non_crypto_unchanged(self) -> None:
         codes = ["000001.SZ", "AAPL.US"]
         assert _normalize_codes(codes, "tushare") == codes
-        assert _normalize_codes(codes, "yfinance") == codes
+        assert _normalize_codes(codes, "global") == codes
 
 
 # ---------------------------------------------------------------------------

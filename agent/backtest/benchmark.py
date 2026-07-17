@@ -11,7 +11,9 @@ from typing import Optional
 
 import pandas as pd
 
-from backtest.loaders.yfinance_loader import DataLoader as YfinanceLoader
+from backtest.loaders.astock_loader import DataLoader as AStockLoader
+from backtest.loaders.global_loader import DataLoader as GlobalStockLoader
+from backtest.loaders.registry import resolve_loader
 
 
 # -------------------------------------------------------------------
@@ -135,12 +137,33 @@ def _fetch_benchmark(
     end_date:   str,
     interval:   str,
 ) -> pd.DataFrame:
-    """Fetch benchmark OHLCV data via yfinance (single symbol, no auth)."""
-    loader = YfinanceLoader()
-    result = loader.fetch([ticker], start_date, end_date, interval=interval)
+    """Fetch one benchmark through the consolidated market loaders."""
+    upper = ticker.upper()
+    fetch_symbol = ticker
+    result_key = ticker
+
+    if upper.startswith("HK."):
+        fetch_symbol = f"{ticker[3:]}.HK"
+        loader = GlobalStockLoader()
+    elif upper.endswith(".HK"):
+        loader = GlobalStockLoader()
+    elif upper.endswith((".SH", ".SZ", ".BJ")):
+        loader = AStockLoader()
+    elif "-" in upper or "/" in upper:
+        loader = resolve_loader("crypto")
+    else:
+        # Public API accepts explicit ``SPY`` while the consolidated loader uses
+        # the project's market suffix convention.
+        if not upper.endswith(".US"):
+            fetch_symbol = f"{ticker}.US"
+        loader = GlobalStockLoader()
+
+    result = loader.fetch([fetch_symbol], start_date, end_date, interval=interval)
 
     if isinstance(result, dict):
-        df = result.get(ticker)
+        df = result.get(fetch_symbol)
+        if df is None and result_key != fetch_symbol:
+            df = result.get(result_key)
     elif isinstance(result, pd.DataFrame):
         df = result
     else:

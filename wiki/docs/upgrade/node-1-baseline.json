@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-17T10:46:20+08:00",
+  "repository": "/Users/flyounger54/Desktop/quant-system/Vibe-Trading",
+  "branch": "upgrade/node-1-contract-recovery",
+  "starting_head": "de5337ab8615dd19b2de8ddabfbf887856d7bbca",
+  "starting_tag": "upgrade-node-0-accepted",
+  "status": "accepted",
+  "accepted_at": "2026-07-17T10:52:47+08:00",
+  "runtime": {
+    "python": {
+      "validated": ["3.11.13", "3.12.11"],
+      "lock_file": "requirements.lock",
+      "pip_check": "pass"
+    },
+    "node": {
+      "version": "20.20.2",
+      "npm": "10.8.2",
+      "version_file": ".nvmrc"
+    }
+  },
+  "before": {
+    "backend_collection": {
+      "collected": 4211,
+      "errors": 18
+    },
+    "backend_first_full_run_after_collection_recovery": {
+      "passed": 4248,
+      "skipped": 2,
+      "failed": 50
+    },
+    "frontend": {
+      "test_files": 27,
+      "tests": 227,
+      "passed": 226,
+      "failed": 1
+    }
+  },
+  "after": {
+    "backend_collection": {
+      "collected": 4302,
+      "errors": 0,
+      "exact_count_gate": true
+    },
+    "backend_python_3_11": {
+      "passed": 4300,
+      "skipped": 2,
+      "failed": 0,
+      "warnings": 14,
+      "duration_seconds": 227.78
+    },
+    "backend_python_3_12": {
+      "passed": 4300,
+      "skipped": 2,
+      "failed": 0,
+      "warnings": 13,
+      "duration_seconds": 187.85
+    },
+    "frontend": {
+      "test_files": 27,
+      "tests": 227,
+      "passed": 227,
+      "failed": 0,
+      "exact_count_gate": true,
+      "build": {
+        "status": "pass",
+        "modules_transformed": 2753,
+        "dist_kib": 2100,
+        "largest_chunk_raw_kib": 698.42
+      }
+    },
+    "doctor": {
+      "passed": 13,
+      "warned": 3,
+      "failed": 0
+    },
+    "static_gates": {
+      "compileall": "pass",
+      "git_diff_check": "pass",
+      "ci_grep_gates": "pass",
+      "workflow_yaml_parse": "pass",
+      "shell_syntax": "pass"
+    }
+  },
+  "acceptance": {
+    "user_accepted": true,
+    "command": "VIBE_PYTHON=<python-3.11-or-3.12> VIBE_NODE=<node-20> VIBE_NPM=<npm-10> scripts/node1-acceptance --full",
+    "python_3_11_exit_code": 0,
+    "python_3_12_exit_code": 0,
+    "known_collection_errors": 0,
+    "known_frontend_failures": 0
+  },
+  "excluded_from_node": [
+    "credentialed live market-provider validation",
+    "real-LLM live E2E harness",
+    "Docker image build/runtime because Docker CLI is unavailable",
+    "optional provider installation and credential configuration"
+  ]
+}

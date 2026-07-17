@@ -32,3 +32,11 @@ def test_load_expected_ignores_comments(tmp_path: Path) -> None:
 
     assert _MODULE.load_expected(baseline) == {"src/a.test.ts > suite > case"}
 
+
+def test_parse_frontend_counts_strips_ansi() -> None:
+    output = (
+        "\x1b[32m Test Files  27 passed (27)\x1b[0m\n"
+        "\x1b[32m      Tests  227 passed (227)\x1b[0m\n"
+    )
+
+    assert _MODULE.parse_frontend_counts(output) == (27, 227)

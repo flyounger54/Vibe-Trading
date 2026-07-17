@@ -217,7 +217,15 @@ def _cache_frame(value: float = 1.0) -> pd.DataFrame:
     return frame
 
 
-def test_loader_cache_disabled_by_default_bypasses_home(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def isolate_loader_memory_cache():
+    """L1 is process-wide in production but must not leak across unit tests."""
+    base._MEMORY_CACHE.clear()
+    yield
+    base._MEMORY_CACHE.clear()
+
+
+def test_loader_cache_enabled_by_default_writes_home(tmp_path, monkeypatch, fake_duckdb):
     monkeypatch.delenv(LOADER_CACHE_ENV, raising=False)
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
@@ -240,7 +248,7 @@ def test_loader_cache_disabled_by_default_bypasses_home(tmp_path, monkeypatch):
 
     assert calls["count"] == 1
     pd.testing.assert_frame_equal(out, frame)
-    assert not (home / ".vibe-trading").exists()
+    assert (home / ".vibe-trading" / "cache" / "loaders").is_dir()
 
 
 def test_loader_cache_key_partitions_source_symbol_timeframe_date_and_fields():
@@ -423,7 +431,7 @@ def test_loader_cache_real_duckdb_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     frame = _cache_frame()
     kwargs = {
-        "source": "yfinance",
+        "source": "global",
         "symbol": "AAPL.US",
         "timeframe": "1D",
         "start_date": "2025-01-01",
@@ -443,33 +451,33 @@ def test_loader_cache_real_duckdb_round_trip(tmp_path, monkeypatch):
     pd.testing.assert_frame_equal(restored, frame)
 
 
-def test_yfinance_loader_serves_second_fetch_from_cache(tmp_path, monkeypatch, fake_duckdb):
-    """A batch loader (yfinance) must skip its bulk download on a full cache hit."""
+def test_global_loader_serves_second_fetch_from_cache(tmp_path, monkeypatch, fake_duckdb):
+    """The consolidated global loader skips Yahoo on a full cache hit."""
     monkeypatch.setenv(LOADER_CACHE_ENV, "1")
     monkeypatch.setenv("HOME", str(tmp_path))
-    import backtest.loaders.yfinance_loader as yfl
+    import backtest.loaders.global_loader as global_loader
 
     calls = {"n": 0}
 
-    def fake_download(tickers, start_date, end_date, interval):
+    def fake_download(symbol, start_date, end_date, interval):
         calls["n"] += 1
-        return pd.DataFrame(
+        return [
             {
-                "Open": [1.0, 2.0],
-                "High": [1.5, 2.5],
-                "Low": [0.5, 1.5],
-                "Close": [1.2, 2.2],
-                "Volume": [100, 200],
+                "date": "2025-01-02", "open": 1.0, "high": 1.5,
+                "low": 0.5, "close": 1.2, "volume": 100,
             },
-            index=pd.DatetimeIndex(["2025-01-02", "2025-01-03"], name="Date"),
-        )
+            {
+                "date": "2025-01-03", "open": 2.0, "high": 2.5,
+                "low": 1.5, "close": 2.2, "volume": 200,
+            },
+        ]
 
-    monkeypatch.setattr(yfl, "_download_history", fake_download)
+    monkeypatch.setattr(global_loader, "stock_kline_yahoo", fake_download)
 
-    loader = yfl.DataLoader()
+    loader = global_loader.DataLoader()
     first = loader.fetch(["AAPL.US"], "2025-01-01", "2025-01-03")
     second = loader.fetch(["AAPL.US"], "2025-01-01", "2025-01-03")
 
-    assert calls["n"] == 1  # second fetch is served from cache, no re-download
+    assert calls["n"] == 1  # second fetch is served from cache, no Yahoo call
     assert "AAPL.US" in first and "AAPL.US" in second
     pd.testing.assert_frame_equal(first["AAPL.US"], second["AAPL.US"])

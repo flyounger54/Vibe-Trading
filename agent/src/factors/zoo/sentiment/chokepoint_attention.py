@@ -43,12 +43,6 @@ __alpha_meta__ = {
     ),
 }
 
-_SHORT_WINDOW = 5
-_LONG_WINDOW = 20
-_WEIGHT_TURNOVER = 0.6
-_WEIGHT_ACCELERATION = 0.4
-
-
 def _cross_sectional_zscore(df: pd.DataFrame) -> pd.DataFrame:
     mean = df.mean(axis=1, skipna=True)
     std = df.std(axis=1, ddof=1, skipna=True)
@@ -63,22 +57,30 @@ def compute(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
     Sub-factor 1 (turnover anomaly): volume_t / MA20(volume) z-scored.
     Sub-factor 2 (volume acceleration): (MA5 - MA20) / MA20 z-scored.
     """
+    short_window = 5
+    long_window = 20
+    weight_turnover = 0.6
+    weight_acceleration = 0.4
+
     volume = panel["close"] * 0  # shape template
     if "volume" in panel:
         volume = panel["volume"].astype(float)
     else:
         return volume * np.nan
 
-    vol_ma_long = volume.rolling(window=_LONG_WINDOW, min_periods=10).mean()
+    vol_ma_long = volume.rolling(window=long_window, min_periods=10).mean()
     vol_ma_long_safe = vol_ma_long.where(vol_ma_long > 0)
 
     turnover_ratio = volume / vol_ma_long_safe
     sub1 = _cross_sectional_zscore(turnover_ratio)
 
-    vol_ma_short = volume.rolling(window=_SHORT_WINDOW, min_periods=2).mean()
+    vol_ma_short = volume.rolling(window=short_window, min_periods=2).mean()
     acceleration = (vol_ma_short - vol_ma_long) / vol_ma_long_safe
     sub2 = _cross_sectional_zscore(acceleration)
 
-    composite = _WEIGHT_TURNOVER * sub1.fillna(0) + _WEIGHT_ACCELERATION * sub2.fillna(0)
+    composite = (
+        weight_turnover * sub1.fillna(0)
+        + weight_acceleration * sub2.fillna(0)
+    )
 
     return _cross_sectional_zscore(composite)

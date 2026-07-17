@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -12,7 +13,9 @@ import threading
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Coroutine, Iterable, Protocol, TypeVar
+from urllib.parse import urlparse
 
+import httpx
 from fastmcp.client import Client
 from fastmcp.client.auth import OAuth
 from fastmcp.client.client import CallToolResult
@@ -44,6 +47,25 @@ _TRANSIENT_ERROR_TOKENS = (
 )
 
 ResultT = TypeVar("ResultT")
+
+
+def _is_loopback_url(url: str) -> bool:
+    """Return whether an HTTP transport targets localhost/loopback."""
+    hostname = urlparse(url).hostname
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _loopback_httpx_client_factory(**kwargs: Any) -> httpx.AsyncClient:
+    """Build a local MCP client that cannot leak loopback traffic to a proxy."""
+    kwargs["trust_env"] = False
+    return httpx.AsyncClient(**kwargs)
 
 
 class AsyncMCPClient(Protocol):
@@ -399,9 +421,15 @@ class MCPServerAdapter:
                 keep_alive=False,
             )
         elif transport_type == "sse":
+            httpx_factory = (
+                _loopback_httpx_client_factory
+                if _is_loopback_url(self.server_config.url)
+                else None
+            )
             transport = SSETransport(
                 url=self.server_config.url,
                 headers=dict(self.server_config.headers) or None,
+                httpx_client_factory=httpx_factory,
             )
         else:
             auth = None
@@ -421,10 +449,16 @@ class MCPServerAdapter:
                     client_secret=oauth_config.client_secret,
                     client_metadata_url=oauth_config.client_metadata_url,
                 )
+            httpx_factory = (
+                _loopback_httpx_client_factory
+                if _is_loopback_url(self.server_config.url)
+                else None
+            )
             transport = StreamableHttpTransport(
                 url=self.server_config.url,
                 headers=dict(self.server_config.headers) or None,
                 auth=auth,
+                httpx_client_factory=httpx_factory,
             )
 
         # Use a minimum of 30 s for init_timeout so cold-start servers (pip

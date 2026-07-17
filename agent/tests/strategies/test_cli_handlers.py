@@ -13,7 +13,7 @@ from src.strategies.cli_handlers import (
 class TestHandleStrategyList:
     def test_list_all(self) -> None:
         out = handle_strategy_list()
-        assert "Found 40 strategies" in out
+        assert "Found 42 strategies" in out
         assert "trend_dual_ma" in out
 
     def test_list_filtered(self) -> None:

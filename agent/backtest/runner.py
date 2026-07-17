@@ -295,7 +295,7 @@ def _validate_signal_engine_class(engine_cls) -> None:
 # ``_detect_submarket`` are imported from ``_market_hooks`` above and
 # re-exported here for back-compat (swarm/grounding.py, tests).
 
-# Back-compat: market type -> legacy source name (for engine selection & metrics)
+# Market type -> canonical source name (for engine selection and metrics).
 _MARKET_TO_SOURCE = {
     "a_share": "astock",
     "us_equity": "global",
@@ -309,13 +309,13 @@ _MARKET_TO_SOURCE = {
 
 
 def _detect_source(code: str) -> str:
-    """Infer legacy source name from symbol (back-compat for metrics/engine).
+    """Infer the canonical source name from a symbol.
 
     Args:
         code: Ticker / symbol string.
 
     Returns:
-        Source name (tushare/okx/yfinance/akshare).
+        Source name (astock/global/tushare/okx/local).
     """
     market = _detect_market(code)
     return _MARKET_TO_SOURCE.get(market, "tushare")
@@ -338,7 +338,7 @@ def _group_codes_by_market(codes: List[str]) -> Dict[str, List[str]]:
 
 
 def _group_codes_by_source(codes: List[str]) -> Dict[str, List[str]]:
-    """Group symbols by inferred source (back-compat).
+    """Group symbols by inferred canonical source.
 
     Args:
         codes: List of symbol strings.

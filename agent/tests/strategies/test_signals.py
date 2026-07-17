@@ -1,4 +1,4 @@
-"""Signal validation for all 40 strategies: range, NaN safety, types."""
+"""Signal validation for the complete strategy zoo: range, NaN safety, types."""
 
 from __future__ import annotations
 
@@ -116,7 +116,10 @@ class TestAllStrategiesProduceNonZero:
             total_nz = sum(s.fillna(0).ne(0).sum() for s in signals.values())
             if total_nz > 0:
                 active_count += 1
-        assert active_count >= 30, f"Only {active_count}/40 strategies produced non-zero signals"
+        total = len(registry.list())
+        assert active_count >= 30, (
+            f"Only {active_count}/{total} strategies produced non-zero signals"
+        )
 
 
 class TestEmptyDataMap:

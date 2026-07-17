@@ -33,12 +33,12 @@ from src.market_data import (
 @pytest.mark.parametrize(
     "code,expected",
     [
-        ("600519.SH", "tencent"),
-        ("000001.SZ", "tencent"),
-        ("430139.BJ", "tencent"),
-        ("AAPL.US", "yahoo"),
-        ("700.HK", "yahoo"),
-        ("00700.HK", "yahoo"),
+        ("600519.SH", "astock"),
+        ("000001.SZ", "astock"),
+        ("430139.BJ", "astock"),
+        ("AAPL.US", "global"),
+        ("700.HK", "global"),
+        ("00700.HK", "global"),
         ("BTC-USDT", "okx"),
         ("ETH/USDT", "ccxt"),
         ("local:my_file", "local"),
@@ -155,7 +155,7 @@ def test_fetch_explicit_source_normalizes_rows() -> None:
         codes=["AAPL.US"],
         start_date="2026-01-01",
         end_date="2026-01-02",
-        source="yahoo",
+        source="global",
         loader_resolver=lambda src: _StubLoader,
     )
     assert "AAPL.US" in out
@@ -178,8 +178,8 @@ def test_fetch_auto_groups_by_detected_source() -> None:
         source="auto",
         loader_resolver=resolver,
     )
-    # AAPL.US -> yahoo, BTC-USDT -> okx: two distinct loader groups resolved.
-    assert set(seen) == {"yahoo", "okx"}
+    # AAPL.US -> global, BTC-USDT -> okx: two distinct loader groups resolved.
+    assert set(seen) == {"global", "okx"}
     assert "AAPL.US" in out and "BTC-USDT" in out
 
 
@@ -188,7 +188,7 @@ def test_fetch_loader_error_falls_through_to_unresolved() -> None:
         codes=["X.US"],
         start_date="2026-01-01",
         end_date="2026-01-02",
-        source="yahoo",
+        source="global",
         loader_resolver=lambda src: _BadLoader,
     )
     assert out["_unresolved"] == ["X.US"]
@@ -199,7 +199,7 @@ def test_fetch_missing_symbol_listed_as_unresolved() -> None:
         codes=["A.US", "B.US"],
         start_date="2026-01-01",
         end_date="2026-01-02",
-        source="yahoo",
+        source="global",
         loader_resolver=lambda src: _PartialLoader,
     )
     assert "A.US" in out
@@ -216,7 +216,7 @@ def test_fetch_json_is_strict_and_parseable() -> None:
         codes=["AAPL.US"],
         start_date="2026-01-01",
         end_date="2026-01-02",
-        source="yahoo",
+        source="global",
         loader_resolver=lambda src: _StubLoader,
     )
     parsed = json.loads(payload)  # must be valid JSON
@@ -239,7 +239,7 @@ def test_fetch_json_rejects_nan_via_allow_nan_false() -> None:
         codes=["A.US"],
         start_date="2026-01-01",
         end_date="2026-01-02",
-        source="yahoo",
+        source="global",
         loader_resolver=lambda src: _NanLoader,
     )
     parsed = json.loads(payload)

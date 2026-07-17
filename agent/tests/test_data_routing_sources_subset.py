@@ -72,21 +72,14 @@ def test_skill_sources_are_subset_of_valid_sources() -> None:
     )
 
 
-def test_new_sources_are_documented() -> None:
-    """The eight newly registered sources must each appear in the Source Overview."""
+def test_canonical_sources_are_documented() -> None:
+    """Every consolidated runtime source appears in the Source Overview."""
     named = _source_names_in_skill()
-    new_sources = {
-        "eastmoney",
-        "sina",
-        "stooq",
-        "yahoo",
-        "finnhub",
-        "alphavantage",
-        "tiingo",
-        "fmp",
-    }
-    missing = new_sources - named
-    assert not missing, f"data-routing SKILL.md missing new source rows: {sorted(missing)}"
+    canonical_sources = VALID_SOURCES - {"auto"}
+    missing = canonical_sources - named
+    assert not missing, (
+        f"data-routing SKILL.md missing canonical source rows: {sorted(missing)}"
+    )
 
 
 # A Capability table row looks like ``| Stock news | `get_stock_news` | A-share, US, HK | — |``.

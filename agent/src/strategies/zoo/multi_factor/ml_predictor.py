@@ -6,10 +6,13 @@ returns, and generates position signals based on cross-sectional rank.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 __strategy_meta__ = {
     "id": "mf_ml_predictor",
@@ -50,12 +53,18 @@ class SignalEngine:
         self.rebalance_days: int = int(params.get("rebalance_days", 5))
         self.use_proba: bool = bool(params.get("use_proba", False))
 
-        if not self.model_id and not self.schedule_name:
-            raise ValueError("Either model_id or schedule_name must be provided")
+        self.is_configured = bool(self.model_id or self.schedule_name)
 
     def generate(
         self, data_map: Dict[str, pd.DataFrame]
     ) -> Dict[str, pd.Series]:
+        if not self.is_configured:
+            if data_map:
+                logger.warning(
+                    "mf_ml_predictor has no model_id or schedule_name; "
+                    "returning neutral signals"
+                )
+            return _zero_signals(data_map)
         if self.schedule_name:
             return self._generate_rolling(data_map)
         return self._generate_fixed(data_map)

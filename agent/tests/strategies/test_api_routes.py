@@ -21,8 +21,8 @@ class TestStrategyListEndpoint:
         r = client.get("/strategy/list")
         assert r.status_code == 200
         data = r.json()
-        assert data["total"] == 40
-        assert len(data["strategies"]) == 40
+        assert data["total"] == 42
+        assert len(data["strategies"]) == 42
 
     def test_list_filter_category(self, client: TestClient) -> None:
         r = client.get("/strategy/list?category=trend")

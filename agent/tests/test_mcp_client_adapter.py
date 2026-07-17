@@ -456,6 +456,7 @@ def test_build_client_uses_sse_transport(monkeypatch) -> None:
     assert captured["transport"] == "sse"
     assert captured["transport_kwargs"]["url"] == "http://localhost:8900/sse"
     assert captured["transport_kwargs"]["headers"] == {"X-Test": "1"}
+    assert captured["transport_kwargs"]["httpx_client_factory"] is not None
 
 
 def test_build_client_uses_streamable_http_transport(monkeypatch) -> None:
@@ -485,6 +486,7 @@ def test_build_client_uses_streamable_http_transport(monkeypatch) -> None:
 
     assert captured["transport"] == "streamableHttp"
     assert captured["transport_kwargs"]["url"] == "http://localhost:8900/mcp"
+    assert captured["transport_kwargs"]["httpx_client_factory"] is not None
 
 
 def test_build_client_rejects_url_only_config_without_explicit_type() -> None:

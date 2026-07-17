@@ -1,0 +1,1 @@
+# Node 1 acceptance baseline: no pytest collection errors are allowed.

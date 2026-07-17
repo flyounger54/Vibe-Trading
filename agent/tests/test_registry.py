@@ -140,45 +140,32 @@ class TestFallbackChains:
         for market, chain in FALLBACK_CHAINS.items():
             assert len(chain) > 0, f"Fallback chain for {market} is empty"
 
-    def test_crypto_chain_includes_yfinance_fallback(self) -> None:
-        """yfinance is the third-tier fallback for crypto when OKX and CCXT fail."""
-        assert "yfinance" in FALLBACK_CHAINS["crypto"]
-        # OKX and CCXT should still be preferred
-        assert FALLBACK_CHAINS["crypto"][:2] == ["okx", "ccxt"]
+    def test_crypto_chain_uses_exchange_clients_then_local(self) -> None:
+        assert FALLBACK_CHAINS["crypto"] == ["okx", "ccxt", "local"]
 
     def test_chains_ordered_by_ip_ban_risk(self) -> None:
         """Equity chains lead with throttle-tolerant public sources and trail
         with key-gated REST fallbacks, in the exact reviewed order."""
-        assert FALLBACK_CHAINS["a_share"] == [
-            "tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local",
-        ]
-        assert FALLBACK_CHAINS["us_equity"] == [
-            "yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp",
-            "finnhub", "alphavantage", "akshare", "local",
-        ]
-        assert FALLBACK_CHAINS["hk_equity"] == [
-            "eastmoney", "yahoo", "futu", "yfinance", "akshare", "local",
-        ]
+        assert FALLBACK_CHAINS["a_share"] == ["astock", "tushare", "local"]
+        assert FALLBACK_CHAINS["us_equity"] == ["global", "local"]
+        assert FALLBACK_CHAINS["hk_equity"] == ["global", "local"]
 
-    def test_us_equity_includes_sina_fallback(self) -> None:
-        """'sina' must be reachable for US equities (after yahoo/stooq) so it is
-        not a dead config source that no chain can ever select."""
-        chain = FALLBACK_CHAINS["us_equity"]
-        assert "sina" in chain
-        assert chain.index("sina") > chain.index("yahoo")
-        assert chain.index("sina") > chain.index("stooq")
+    def test_global_loader_owns_sina_fallback_internally(self) -> None:
+        assert FALLBACK_CHAINS["us_equity"][0] == "global"
+        assert "sina" not in VALID_SOURCES
 
-    def test_a_share_includes_baostock(self) -> None:
-        """'baostock' must remain a reachable A-share fallback."""
-        assert "baostock" in FALLBACK_CHAINS["a_share"]
+    def test_astock_loader_owns_public_a_share_fallbacks(self) -> None:
+        assert FALLBACK_CHAINS["a_share"][0] == "astock"
+        assert "mootdx" not in VALID_SOURCES
+        assert "tencent" not in VALID_SOURCES
 
     def test_unchanged_chains_preserved(self) -> None:
         """crypto/futures/fund/macro/forex chains must be left untouched."""
-        assert FALLBACK_CHAINS["crypto"] == ["okx", "ccxt", "yfinance", "local"]
-        assert FALLBACK_CHAINS["futures"] == ["tushare", "akshare", "local"]
-        assert FALLBACK_CHAINS["fund"] == ["tushare", "akshare", "local"]
-        assert FALLBACK_CHAINS["macro"] == ["akshare", "tushare", "local"]
-        assert FALLBACK_CHAINS["forex"] == ["akshare", "yfinance", "local"]
+        assert FALLBACK_CHAINS["crypto"] == ["okx", "ccxt", "local"]
+        assert FALLBACK_CHAINS["futures"] == ["tushare", "local"]
+        assert FALLBACK_CHAINS["fund"] == ["tushare", "local"]
+        assert FALLBACK_CHAINS["macro"] == ["tushare", "local"]
+        assert FALLBACK_CHAINS["forex"] == ["local"]
 
 
 # ---------------------------------------------------------------------------
@@ -187,13 +174,10 @@ class TestFallbackChains:
 
 
 class TestValidSources:
-    def test_includes_new_loaders(self) -> None:
-        """Newly registered loaders must be accepted config sources."""
-        new_sources = {
-            "eastmoney", "sina", "stooq", "yahoo",
-            "finnhub", "alphavantage", "tiingo", "fmp",
-        }
-        assert new_sources <= VALID_SOURCES
+    def test_includes_consolidated_loaders(self) -> None:
+        assert {
+            "astock", "global", "tushare", "okx", "ccxt", "local", "auto"
+        } == VALID_SOURCES
 
     def test_covers_all_registered_loaders(self) -> None:
         """Every registered loader name must be an accepted config source so a

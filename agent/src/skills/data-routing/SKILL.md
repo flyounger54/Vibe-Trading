@@ -19,24 +19,12 @@ per-source skill.
 
 | Source | Markets | Auth (env key) | Network | Skill |
 |--------|---------|----------------|---------|-------|
+| astock | A-shares | No | mootdx TCP, Tencent HTTP fallback | data-routing |
+| global | US and HK stocks | No | Yahoo HTTP, Sina daily fallback | data-routing |
 | tushare | A-shares, funds, futures, macro | Yes (`TUSHARE_TOKEN`) | China network | tushare |
-| akshare | A-shares, US, HK, futures, macro, forex | No | Unrestricted | akshare |
-| yfinance | US stocks, HK stocks, ETFs | No | Needs Yahoo access | yfinance |
 | okx | Crypto (OKX exchange) | No | Needs okx.com access | okx-market |
 | ccxt | Crypto (100+ exchanges) | No | Needs exchange access | ccxt |
-| baostock | A-shares (free daily/min) | No | China network | data-routing |
-| tencent | A-shares, HK, US (never-banned) | No | Unrestricted | data-routing |
-| mootdx | A-shares (TDX servers, never-banned) | No | China network | data-routing |
-| futu | A/HK/US via OpenD gateway | Yes (OpenD running) | Local gateway | data-routing (runner-internal) |
 | local | User CSV/parquet on disk | No | Offline | data-routing (runner-internal) |
-| eastmoney | A-shares, HK, US equities | No (IP-throttled) | Unrestricted | data-routing |
-| sina | US equities (daily OHLCV) | No (IP-throttled) | Unrestricted | data-routing |
-| stooq | US equities (daily OHLCV) | No | Unrestricted | data-routing |
-| yahoo | US, HK equities | No (IP-throttled) | Needs Yahoo access | data-routing |
-| finnhub | US equities | Yes (`FINNHUB_API_KEY`) | Unrestricted | data-routing |
-| alphavantage | US equities | Yes (`ALPHAVANTAGE_API_KEY`) | Unrestricted | data-routing |
-| tiingo | US equities | Yes (`TIINGO_API_KEY`) | Unrestricted | data-routing |
-| fmp | US equities | Yes (`FMP_API_KEY`) | Unrestricted | data-routing |
 
 ## Capability → Tool Routing
 
@@ -90,13 +78,11 @@ same-market sources automatically. Only set a concrete source when the user asks
 
 ### Source priority (for OHLCV by market)
 
-- **A-shares**: tencent / mootdx (never banned) > tushare (`TUSHARE_TOKEN`) >
-  baostock / akshare > eastmoney (throttled).
-- **US stocks**: stooq / yahoo > tiingo / finnhub / fmp / alphavantage (key-gated) >
-  sina / eastmoney (throttled) > yfinance.
-- **HK stocks**: tencent > eastmoney / yahoo > yfinance.
+- **A-shares**: astock (mootdx, then Tencent) > tushare (`TUSHARE_TOKEN`) > local.
+- **US stocks**: global (Yahoo, then Sina for daily bars) > local.
+- **HK stocks**: global (Yahoo) > local.
 - **Crypto**: okx (single exchange) > ccxt (multi-exchange).
-- **Futures / macro / forex**: tushare > akshare.
+- **Futures / funds / macro**: tushare > local; **forex**: local bridge.
 
 ## Symbol Format Reference
 
@@ -111,14 +97,14 @@ same-market sources automatically. Only set a concrete source when the user asks
 
 ## Ban-Risk & Fallback Notes
 
-- **Prefer never-banned sources**: `tencent` and `mootdx` have no observed IP ban;
-  reach for them first for A-share OHLCV when no token is set.
+- **Prefer the consolidated sources**: `astock` owns the mootdx → Tencent
+  fallback and `global` owns the Yahoo → Sina fallback. Callers must not select
+  those internal providers as independent loader names.
 - **Eastmoney rate-limits by IP and must be throttled.** Every Eastmoney-backed
   tool/loader routes through the shared per-host throttle; do not hammer it. On a
-  throttle/timeout, fall back to the same-market source above (tencent/baostock).
+  throttle/timeout, let the consolidated market loader use its internal fallback.
 - **Sina / Yahoo also throttle by IP** — same per-host wrapper, same fallback rule.
-- **Key-gated sources need their env key** (`FINNHUB_API_KEY`,
-  `ALPHAVANTAGE_API_KEY`, `TIINGO_API_KEY`, `FMP_API_KEY`, `FRED_API_KEY`,
+- **Key-gated capabilities need their env key** (`FRED_API_KEY`,
   `VIBE_TRADING_IWENCAI_KEY`, `TUSHARE_TOKEN`). If the key is absent the tool/loader
   is unavailable — route to a free same-market source instead of erroring out.
 - A single failing symbol or transient HTTP error is reported inside the envelope;

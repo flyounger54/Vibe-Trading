@@ -188,10 +188,10 @@ def test_run_swarm_wait_zero_returns_run_id_not_error(tmp_path, monkeypatch):
 def test_reaper_threshold_lifts_when_heartbeat_disabled(tmp_path, monkeypatch):
     """When the user disables heartbeats (interval set very high), the
     threshold must rise so a legitimately slow run isn't false-positive-
-    reaped. Conversely the default 3s heartbeat keeps detection at 60s —
+    reaped. Conversely the default 3s heartbeat keeps detection at 180s —
     silence past that means the host is genuinely dead."""
     # Disable heartbeat by setting a huge interval; threshold should clamp
-    # to the retry ceiling (≤ 3660s for the long-timeout preset).
+    # to the retry ceiling (≤ 3720s for the long-timeout preset).
     monkeypatch.setenv("SWARM_HEARTBEAT_INTERVAL_S", "600")
     store = SwarmStore(base_dir=tmp_path)
     long_run = _base_run("r-long", timeout=1800, retries=1)
@@ -207,9 +207,9 @@ def test_reaper_threshold_lifts_when_heartbeat_disabled(tmp_path, monkeypatch):
     )
 
     threshold = store.compute_stale_threshold(long_run)
-    assert threshold == 3660, f"expected retry_ceiling=3660 with heartbeat=600s, got {threshold}"
+    assert threshold == 3720, f"expected retry_ceiling=3720 with heartbeat=600s, got {threshold}"
 
-    # 40 min < 3660s threshold → must not be reaped.
+    # 40 min < 3720s threshold → must not be reaped.
     reaped = store.reap_stale_running_runs()
     assert reaped == []
     assert store.load_run(long_run.id).status == RunStatus.running
@@ -453,19 +453,18 @@ def test_reconcile_run_does_not_overwrite_already_terminal(tmp_path):
 
 def test_compute_stale_threshold_obeys_heartbeat_floor(tmp_path, monkeypatch):
     """When SWARM_HEARTBEAT_INTERVAL_S is small (default 3s), threshold must
-    be the heartbeat floor (60s), not the retry ceiling (3660s for a long-
+    be the heartbeat floor (180s), not the retry ceiling (3720s for a long-
     timeout preset). Earlier expression was algebraically equivalent to the
     ceiling and ignored heartbeat — defeated detection latency entirely."""
     monkeypatch.setenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0")
     store = SwarmStore(base_dir=tmp_path)
-    long_run = _base_run("r-long", timeout=1800, retries=1)  # retry_ceiling = 3660
+    long_run = _base_run("r-long", timeout=1800, retries=1)  # retry_ceiling = 3720
 
     threshold = store.compute_stale_threshold(long_run)
 
-    # heartbeat_floor = max(60, 30) = 60.
-    # Correct math: max(60, min(60, 3660)) = 60.
-    # Buggy math: min(3660, max(60, 3660)) = 3660.
-    assert threshold == 60.0, f"expected 60s heartbeat floor, got {threshold}"
+    # heartbeat_floor = max(180, 3 * 30) = 180.
+    # Correct math: max(180, min(180, 3720)) = 180.
+    assert threshold == 180.0, f"expected 180s heartbeat floor, got {threshold}"
 
 
 def test_get_swarm_status_auto_recovers_zombie(tmp_path, monkeypatch):

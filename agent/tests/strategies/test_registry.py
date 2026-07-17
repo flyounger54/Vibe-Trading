@@ -18,8 +18,8 @@ from src.strategies.registry import (
 
 
 class TestRegistryScan:
-    def test_loads_all_40_strategies(self, registry: StrategyRegistry) -> None:
-        assert registry.health()["loaded"] == 40
+    def test_loads_all_42_strategies(self, registry: StrategyRegistry) -> None:
+        assert registry.health()["loaded"] == 42
 
     def test_zero_failures(self, registry: StrategyRegistry) -> None:
         assert registry.health()["failed"] == 0
@@ -61,7 +61,7 @@ class TestRegistryFilter:
         assert "trend_dual_ma" in result
 
     def test_empty_filter_returns_all(self, registry: StrategyRegistry) -> None:
-        assert len(registry.list()) == 40
+        assert len(registry.list()) == 42
 
 
 class TestRegistryGet:
@@ -102,7 +102,7 @@ class TestRegistryManifest:
         assert "generated_at" in m
         assert "categories" in m
         assert "health" in m
-        assert m["health"]["loaded"] == 40
+        assert m["health"]["loaded"] == 42
 
     def test_manifest_categories_complete(self, registry: StrategyRegistry) -> None:
         m = registry.export_manifest()

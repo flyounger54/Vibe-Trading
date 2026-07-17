@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that pytest collection matches the frozen node 0 failure baseline."""
+"""Verify pytest collection errors and, optionally, the exact test count."""
 
 from __future__ import annotations
 
@@ -13,12 +13,20 @@ _COLLECTION_ERROR = re.compile(
     r"^.*?ERROR collecting (?P<path>\S+?\.py)(?:\s|$)",
     re.MULTILINE,
 )
+_COLLECTION_COUNT = re.compile(r"^(?P<count>\d+) tests collected.*$", re.MULTILINE)
 
 
 def parse_collection_errors(output: str) -> set[str]:
     """Return normalized test paths from pytest collection error headings."""
 
     return {match.group("path").strip() for match in _COLLECTION_ERROR.finditer(output)}
+
+
+def parse_collection_count(output: str) -> int | None:
+    """Return the final pytest collection count, when present."""
+
+    matches = list(_COLLECTION_COUNT.finditer(output))
+    return int(matches[-1].group("count")) if matches else None
 
 
 def load_expected(path: Path) -> set[str]:
@@ -44,15 +52,24 @@ def run_collection() -> subprocess.CompletedProcess[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 1:
-        print("usage: check_node0_collection.py EXPECTED_ERRORS", file=sys.stderr)
+    if len(args) not in {1, 2}:
+        print(
+            "usage: check_node0_collection.py EXPECTED_ERRORS [EXPECTED_COUNT]",
+            file=sys.stderr,
+        )
         return 2
 
     expected_path = Path(args[0])
     expected = load_expected(expected_path)
+    try:
+        expected_count = int(args[1]) if len(args) == 2 else None
+    except ValueError:
+        print("EXPECTED_COUNT must be an integer", file=sys.stderr)
+        return 2
     result = run_collection()
     output = result.stdout + result.stderr
     actual = parse_collection_errors(output)
+    actual_count = parse_collection_count(output)
     summaries = re.findall(r"^\d+ tests collected.*$", output, flags=re.MULTILINE)
     print(f"pytest collection exit: {result.returncode}")
     for path in sorted(actual):
@@ -76,7 +93,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pytest collection failed with exit {result.returncode}", file=sys.stderr)
         return 1
 
-    print(f"Node 0 collection baseline matched: {len(expected)} known error(s).")
+    if expected_count is not None and actual_count != expected_count:
+        print(
+            f"pytest collected {actual_count!r} tests; expected exactly {expected_count}",
+            file=sys.stderr,
+        )
+        return 1
+
+    count_suffix = f", {actual_count} test(s)" if actual_count is not None else ""
+    print(f"Collection baseline matched: {len(expected)} known error(s){count_suffix}.")
     return 0
 
 

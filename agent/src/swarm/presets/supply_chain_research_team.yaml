@@ -120,7 +120,7 @@ agents:
       4. **Red flags** — Any contradictory evidence or warning signs found
       5. **Freshness** — Date of most recent evidence; flag if >90 days stale
       6. **Cross-market counterpart data** — Key metrics for corresponding US/A-share counterparts
-    tools: [bash, read_file, write_file, load_skill, get_research_reports, get_financial_statements, get_stock_profile, get_stock_news, sec_filings_tool, northbound_tool, margin_trading_tool, fund_flow_tool, shareholder_count_tool]
+    tools: [bash, read_file, write_file, load_skill, get_market_data, get_research_reports, get_financial_statements, get_stock_profile, get_stock_news, sec_filings_tool, northbound_tool, margin_trading_tool, fund_flow_tool, shareholder_count_tool]
     skills: [evidence-governance, fundamental-filter, tushare, yfinance, edgar-sec-filings]
     max_iterations: 50
     timeout_seconds: 1800

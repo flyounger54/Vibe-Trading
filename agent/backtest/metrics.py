@@ -14,11 +14,8 @@ from backtest.models import TradeRecord
 
 # ─── Annualisation factor mapping ───
 
-# mootdx (A-share) and futu (HK + A-share) are equity sources, so they mirror
-# the tushare/akshare column: 252 trading days and a 240-minute session. HK
-# sessions are marginally longer (~330 min) — an approximation in line with the
-# rest of this annualisation table; the key fix is that intraday mootdx/futu no
-# longer fall back to the bars_per_day=1 default, which mis-annualised vol/Sharpe.
+# Consolidated equity sources retain their exchange-specific calendars. A-share
+# bars use a 240-minute session; the global source uses the US 390-minute session.
 _TRADING_DAYS = {"astock": 252, "global": 252, "tushare": 252, "okx": 365, "ccxt": 365, "local": 252}
 _BARS_PER_DAY = {
     "1m":  {"astock": 240, "global": 390, "tushare": 240, "okx": 1440, "ccxt": 1440, "local": 240},
@@ -36,7 +33,7 @@ def calc_bars_per_year(interval: str = "1D", source: str = "tushare") -> int:
 
     Args:
         interval: Bar size (1m / 5m / 15m / 30m / 1H / 4H / 1D).
-        source: Data source (tushare / yfinance / okx).
+        source: Canonical data source (astock/global/tushare/okx/ccxt/local).
 
     Returns:
         Bars per year.

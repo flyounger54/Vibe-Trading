@@ -75,6 +75,9 @@ def swarm_runs_root() -> Path:
 _TRANSIENT_WINERRORS = (5, 32)  # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
 _REPLACE_ATTEMPTS = 6
 _REPLACE_BACKOFF = (0.025, 0.05, 0.1, 0.2, 0.4)  # seconds; len == attempts - 1
+_MISSED_HEARTBEATS_BEFORE_STALE = 30.0
+_MIN_STALE_THRESHOLD_S = 180.0
+_RETRY_BUDGET_GRACE_S = 120.0
 
 
 def _is_transient_windows_error(exc: OSError) -> bool:
@@ -315,13 +318,14 @@ class SwarmStore:
         worker, the events.jsonl tail gets a fresh entry every
         ``SWARM_HEARTBEAT_INTERVAL_S`` (default 3s) while a tool call is
         running. Missing ~10 heartbeats in a row means the host has stopped
-        making progress — so the natural threshold is ``heartbeat × 10``
-        (≈30s by default).
+        making progress — so the natural threshold is ``heartbeat × 30``.
+        The 180-second minimum also tolerates host scheduling pauses and short
+        system sleeps without falsely failing a healthy research run.
 
-        We clamp the upper bound to ``max(agent.timeout × (retries+1)) + 60s``
+        We clamp the upper bound to ``max(agent.timeout × (retries+1)) + 120s``
         so a misconfigured / disabled heartbeat (e.g. interval set to 10min)
         cannot push detection latency past the run's own retry budget. And
-        we hold a 60s lower bound so a very tight heartbeat doesn't false-
+        we hold a 180s lower bound so a very tight heartbeat doesn't false-
         positive on routine sub-second event gaps.
 
         Returns:
@@ -331,15 +335,23 @@ class SwarmStore:
             interval = float(os.getenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0"))
         except ValueError:
             interval = 3.0
-        heartbeat_floor = max(180.0, interval * 30.0)
+        heartbeat_floor = max(
+            _MIN_STALE_THRESHOLD_S,
+            interval * _MISSED_HEARTBEATS_BEFORE_STALE,
+        )
 
         agent_budgets = [
             max(1, int(agent.timeout_seconds or 300)) * (max(0, int(agent.max_retries)) + 1)
             for agent in run.agents
         ]
-        retry_ceiling = (max(agent_budgets) if agent_budgets else 300) + 120
+        retry_ceiling = (
+            (max(agent_budgets) if agent_budgets else 300)
+            + _RETRY_BUDGET_GRACE_S
+        )
 
-        return float(max(180.0, min(heartbeat_floor, retry_ceiling)))
+        return float(
+            max(_MIN_STALE_THRESHOLD_S, min(heartbeat_floor, retry_ceiling))
+        )
 
     def is_run_stale(self, run: SwarmRun, *, now: datetime | None = None) -> bool:
         """Read-only check: is this ``running`` run silent past its threshold?

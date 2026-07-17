@@ -31,3 +31,9 @@ def test_load_expected_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
     baseline.write_text("# comment\n\nagent/tests/test_old.py\n", encoding="utf-8")
 
     assert _MODULE.load_expected(baseline) == {"agent/tests/test_old.py"}
+
+
+def test_parse_collection_count_uses_final_summary() -> None:
+    output = "10 tests collected in 0.1s\n4300 tests collected in 9.3s\n"
+
+    assert _MODULE.parse_collection_count(output) == 4300

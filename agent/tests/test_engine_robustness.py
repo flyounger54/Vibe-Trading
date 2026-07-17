@@ -355,11 +355,9 @@ class TestBacktestConfigSchema:
                 source="bloomberg",
             )
 
-    def test_mootdx_and_futu_sources_accepted(self) -> None:
-        """mootdx and futu are registered loaders, so config validation must
-        accept them. Regression: ``_VALID_SOURCES`` drifted and rejected both
-        even though the agent-facing backtest tool already allowed them."""
-        for src in ("mootdx", "futu"):
+    def test_consolidated_equity_sources_accepted(self) -> None:
+        """The public A-share and global-equity source names are accepted."""
+        for src in ("astock", "global"):
             c = BacktestConfigSchema(
                 codes=["000001.SZ"],
                 start_date="2025-01-01",
@@ -422,9 +420,9 @@ class TestDateRangeValidation:
         with pytest.raises(ValueError, match="Invalid date format"):
             validate_date_range("not-a-date", "2025-06-01")
 
-    def test_yfinance_loader_validates_dates(self) -> None:
-        """yfinance loader should raise on reversed dates before fetching."""
-        from backtest.loaders.yfinance_loader import DataLoader
+    def test_global_loader_validates_dates(self) -> None:
+        """Global loader should reject reversed dates before fetching."""
+        from backtest.loaders.global_loader import DataLoader
 
         loader = DataLoader()
         with pytest.raises(ValueError):
@@ -446,9 +444,9 @@ class TestDateRangeValidation:
         with pytest.raises(ValueError):
             loader.fetch(["BTC-USDT"], "2025-06-01", "2025-01-01")
 
-    def test_akshare_loader_validates_dates(self) -> None:
-        """AKShare loader should raise on reversed dates before fetching."""
-        from backtest.loaders.akshare_loader import DataLoader
+    def test_astock_loader_validates_dates(self) -> None:
+        """A-stock loader should reject reversed dates before fetching."""
+        from backtest.loaders.astock_loader import DataLoader
 
         loader = DataLoader()
         with pytest.raises(ValueError):
