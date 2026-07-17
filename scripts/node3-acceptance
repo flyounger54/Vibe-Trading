@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Node 3 security/execution-isolation acceptance gate. Never installs dependencies.
+set -u
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHON_BIN=${VIBE_PYTHON:-$ROOT/.venv/bin/python}
+MODE=${1:---full}
+RESULT=0
+
+case "$MODE" in --quick|--full) ;; *) echo "Usage: scripts/node3-acceptance [--quick|--full]" >&2; exit 2 ;; esac
+
+run_step() {
+  label=$1; shift
+  printf '\n== %s ==\n' "$label"
+  if "$@"; then printf '[PASS] %s\n' "$label"; else printf '[FAIL] %s\n' "$label" >&2; RESULT=1; fi
+}
+
+cd "$ROOT" || exit 1
+export PYTHONPATH="$ROOT/agent${PYTHONPATH:+:$PYTHONPATH}"
+
+run_step "Backend exact collection gate (4381)" \
+  "$PYTHON_BIN" scripts/check_node0_collection.py wiki/docs/upgrade/node-2-known-collection-errors.txt 4381
+run_step "Generated API contract drift" "$PYTHON_BIN" scripts/generate-api-contracts --check
+run_step "Node 3 attack and isolation regressions" "$PYTHON_BIN" -m pytest -q \
+  agent/tests/test_node3_api_security.py \
+  agent/tests/test_node3_boundaries.py \
+  agent/tests/test_node3_execution_isolation.py \
+  agent/tests/test_security_auth_api.py \
+  agent/tests/test_upload_security.py
+run_step "Ruff changed-surface gate" "$PYTHON_BIN" -m ruff check \
+  agent/api_server.py agent/src/security agent/src/core/runner.py \
+  agent/src/api/ml_routes.py agent/src/industry_chain/store.py
+run_step "Bandit High gate" "$PYTHON_BIN" -m bandit -q -lll -r agent/src agent/api_server.py
+run_step "Locked Python dependency audit" "$PYTHON_BIN" -m pip_audit -r requirements.lock --progress-spinner off
+
+if [ "$MODE" = "--full" ]; then
+  run_step "Backend full regression" "$PYTHON_BIN" -m pytest -q --tb=short
+  run_step "Frontend production build" sh -c 'cd "$1/frontend" && npm run build' _ "$ROOT"
+  run_step "Frontend exact gate (28 files, 227 tests)" "$PYTHON_BIN" \
+    scripts/check_node0_frontend.py wiki/docs/upgrade/node-2-known-frontend-failures.txt 28 227
+  run_step "npm High/Critical audit" sh -c 'cd "$1/frontend" && npm audit --audit-level=high' _ "$ROOT"
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  run_step "Real container escape test" env VIBE_PYTHON="$PYTHON_BIN" scripts/test-sandbox-runtime
+else
+  printf '[FAIL] Real container escape test: Docker unavailable\n' >&2
+  RESULT=1
+fi
+
+printf '\nNode 3 acceptance %s exit: %s\n' "$MODE" "$RESULT"
+exit "$RESULT"

@@ -21,6 +21,15 @@ def _local_client() -> TestClient:
     return TestClient(api_server.app, client=("127.0.0.1", 50000))
 
 
+def _authorized_local_client() -> TestClient:
+    key = api_server._configured_api_key()
+    return TestClient(
+        api_server.app,
+        client=("127.0.0.1", 50000),
+        headers={"Authorization": f"Bearer {key}"},
+    )
+
+
 @pytest.fixture(autouse=True)
 def clear_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every auth test from dev-mode auth."""
@@ -33,8 +42,7 @@ def clear_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_remote_write_requires_api_key_when_key_unset() -> None:
     response = _remote_client().post("/sessions", json={})
 
-    assert response.status_code == 403
-    assert "API_AUTH_KEY" in response.json()["detail"]
+    assert response.status_code == 401
 
 
 def test_remote_goal_endpoints_require_api_key_when_key_unset() -> None:
@@ -56,13 +64,13 @@ def test_remote_goal_endpoints_require_api_key_when_key_unset() -> None:
     for method, path, body in cases:
         kwargs = {"json": body} if body is not None else {}
         response = getattr(client, method)(path, **kwargs)
-        assert response.status_code == 403, f"{method.upper()} {path}"
+        assert response.status_code == 401, f"{method.upper()} {path}"
 
 
-def test_local_dev_write_allowed_when_key_unset() -> None:
+def test_local_write_requires_generated_key_when_env_key_unset() -> None:
     response = _local_client().post("/sessions", json={})
 
-    assert response.status_code in {201, 501}
+    assert response.status_code == 401
 
 
 def test_docker_gateway_dev_write_allowed_only_with_compose_trust_flag(
@@ -127,19 +135,22 @@ def test_configured_api_key_accepts_bearer_for_sensitive_reads(
     assert response.status_code == 200
 
 
-def test_loopback_bypasses_auth_even_when_api_key_configured(
+def test_loopback_requires_auth_when_api_key_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Loopback clients remain trusted for non-settings reads."""
+    """Loopback peer IP is never an authentication credential."""
     monkeypatch.setenv("API_AUTH_KEY", "secret")
     monkeypatch.setattr(api_server, "_API_KEY", "secret")
 
     local = _local_client()
     remote = _remote_client()
 
-    # Loopback: no bearer needed → should succeed
+    # Loopback without bearer is rejected.
     local_response = local.get("/runs")
-    assert local_response.status_code == 200
+    assert local_response.status_code == 401
+
+    local_bearer = local.get("/runs", headers={"Authorization": "Bearer secret"})
+    assert local_bearer.status_code == 200
 
     # Remote without bearer: still rejected
     remote_response = remote.get("/runs")
@@ -219,7 +230,7 @@ def test_authorized_client_can_write_llm_settings_when_api_key_configured(
     assert "OPENAI_BASE_URL=https://api.openai.com/v1" in env_path.read_text(encoding="utf-8")
 
 
-def test_local_dev_can_write_llm_settings_when_api_key_unset(
+def test_local_cannot_write_llm_settings_without_generated_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -231,8 +242,8 @@ def test_local_dev_can_write_llm_settings_when_api_key_unset(
         json=_llm_settings_payload("https://api.openai.com/v1"),
     )
 
-    assert response.status_code == 200
-    assert "OPENAI_BASE_URL=https://api.openai.com/v1" in env_path.read_text(encoding="utf-8")
+    assert response.status_code == 401
+    assert not env_path.exists()
 
 
 def test_loopback_rejects_rebound_host_before_auth_bypass(
@@ -289,14 +300,14 @@ def test_rebound_host_cannot_start_live_runner(
     monkeypatch.setattr("src.live.halt.halt_flag_set", lambda broker=None: False)
     api_server._runner_tasks.clear()
 
-    response = _local_client().post(
+    response = _authorized_local_client().post(
         "/live/runner/start",
         headers={
             "Host": "attacker.example:8899",
             "Origin": "http://attacker.example:8899",
             "Content-Type": "application/json",
         },
-        json={"broker": "robinhood", "session_id": "proof-session"},
+        json={"broker": "robinhood", "session_id": "abcdef012345"},
     )
 
     assert response.status_code == 403
@@ -304,10 +315,10 @@ def test_rebound_host_cannot_start_live_runner(
     assert "robinhood" not in api_server._runner_tasks
 
 
-def test_allowed_loopback_host_can_start_live_runner_dev_mode(
+def test_allowed_loopback_host_can_start_live_runner_with_generated_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Allowed local hosts preserve the loopback dev-mode runner control path."""
+    """Allowed local hosts still require the generated Bearer key."""
     monkeypatch.setattr(api_server, "_active_mandate_state", lambda broker: SimpleNamespace(expired=False))
 
     reached = {"factory": False}
@@ -325,10 +336,10 @@ def test_allowed_loopback_host_can_start_live_runner_dev_mode(
     monkeypatch.setattr("src.live.halt.halt_flag_set", lambda broker=None: False)
     api_server._runner_tasks.clear()
 
-    response = _local_client().post(
+    response = _authorized_local_client().post(
         "/live/runner/start",
         headers={"Host": "127.0.0.1:8899", "Content-Type": "application/json"},
-        json={"broker": "robinhood", "session_id": "proof-session"},
+        json={"broker": "robinhood", "session_id": "abcdef012345"},
     )
 
     assert response.status_code == 200
@@ -349,7 +360,7 @@ def test_configured_api_key_required_for_session_event_stream(
     assert response.status_code == 401
 
 
-def test_session_event_stream_accepts_query_token_for_browser_eventsource(
+def test_session_event_stream_rejects_query_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("API_AUTH_KEY", "secret")
@@ -357,7 +368,7 @@ def test_session_event_stream_accepts_query_token_for_browser_eventsource(
 
     response = _remote_client().get("/sessions/missing/events?api_key=secret")
 
-    assert response.status_code in {404, 501}
+    assert response.status_code == 400
 
 
 def test_shell_tools_disabled_for_loopback_api_request_by_default() -> None:
@@ -571,7 +582,7 @@ def test_validate_path_param_rejects_traversal_inputs(value: str) -> None:
 
 
 def test_get_run_code_rejects_dot_run_id() -> None:
-    response = _local_client().get("/runs/../code")
+    response = _authorized_local_client().get("/runs/../code")
 
     # Either rejected at routing (404) or by the validator (400). Both are safe;
     # what we forbid is reading code from outside RUNS_DIR.
@@ -579,28 +590,28 @@ def test_get_run_code_rejects_dot_run_id() -> None:
 
 
 def test_get_run_pine_rejects_traversal_run_id() -> None:
-    response = _local_client().get("/runs/foo.bar/pine")
+    response = _authorized_local_client().get("/runs/foo.bar/pine")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid run_id"
 
 
 def test_get_run_pine_rejects_url_encoded_newline_run_id() -> None:
-    response = _local_client().get("/runs/foo%0A/pine")
+    response = _authorized_local_client().get("/runs/foo%0A/pine")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid run_id"
 
 
 def test_get_run_result_rejects_traversal_run_id() -> None:
-    response = _local_client().get("/runs/foo.bar")
+    response = _authorized_local_client().get("/runs/foo.bar")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid run_id"
 
 
 def test_session_endpoints_reject_traversal_session_id() -> None:
-    client = _local_client()
+    client = _authorized_local_client()
 
     cases = [
         ("get", "/sessions/foo.bar", None),
@@ -625,14 +636,14 @@ def test_session_endpoints_reject_traversal_session_id() -> None:
 
 
 def test_session_event_stream_rejects_traversal_session_id() -> None:
-    response = _local_client().get("/sessions/foo.bar/events")
+    response = _authorized_local_client().get("/sessions/foo.bar/events")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid session_id"
 
 
 def test_swarm_run_endpoints_reject_traversal_run_id() -> None:
-    client = _local_client()
+    client = _authorized_local_client()
 
     for method, path in (
         ("get", "/swarm/runs/foo.bar"),

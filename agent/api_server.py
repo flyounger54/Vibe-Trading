@@ -20,12 +20,13 @@ import uuid
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, UploadFile, status
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +55,20 @@ from src.contracts.sessions import (
     SessionResponse,
     UpdateSessionRequest,
 )
+from src.security.api_security import (
+    append_audit_event,
+    get_or_create_api_key,
+    idempotency_registry,
+    install_secret_redaction_filters,
+    normalize_request_id,
+    rate_limiter,
+)
+from src.security.boundaries import validate_identifier, validate_outbound_url
+
+if TYPE_CHECKING:
+    from src.scheduled_research.executor import ScheduledResearchExecutor
+    from src.scheduled_research.models import ScheduledResearchJob
+    from src.scheduled_research.store import ScheduledResearchJobStore
 
 # UTF-8 on Windows
 import sys as _sys
@@ -74,6 +89,7 @@ _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 console = Console()
 logger = logging.getLogger(__name__)
+install_secret_redaction_filters()
 
 
 # ============================================================================
@@ -529,7 +545,7 @@ async def _versioned_http_error(request: Request, exc: HTTPException):
     """Return stable errors for /api/v1 while preserving legacy FastAPI errors."""
     if not request.url.path.startswith("/api/v1/"):
         return await http_exception_handler(request, exc)
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or uuid.uuid4().hex
     envelope = ErrorEnvelope(
         code=error_code_for_status(exc.status_code),
         message=str(exc.detail),
@@ -548,7 +564,7 @@ async def _versioned_http_error(request: Request, exc: HTTPException):
 async def _versioned_validation_error(request: Request, exc: RequestValidationError):
     if not request.url.path.startswith("/api/v1/"):
         return await request_validation_exception_handler(request, exc)
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or uuid.uuid4().hex
     envelope = ErrorEnvelope(
         code=error_code_for_status(422),
         message="Request validation failed",
@@ -593,7 +609,19 @@ async def _reject_untrusted_loopback_host(request: Request, call_next):
 # text/html`` (e.g. a user pasting the URL into the address bar).
 
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-_SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset({"/correlation"})
+_SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset({
+    "/",
+    "/agent",
+    "/runtime",
+    "/reports",
+    "/settings",
+    "/compare",
+    "/correlation",
+    "/alpha-zoo",
+    "/strategy-zoo",
+    "/ml-training",
+    "/industry-chain",
+})
 # Each regex matches a complete request path. Trailing slash optional.
 _SPA_HTML_PATH_REGEX: tuple[re.Pattern[str], ...] = (
     # ``/runs/{run_id}`` — RunDetail page. Excludes ``/runs/{id}/code``,
@@ -602,6 +630,9 @@ _SPA_HTML_PATH_REGEX: tuple[re.Pattern[str], ...] = (
     # ``/ml-training`` and ``/ml-training/{tab}`` — ML Training SPA page.
     # Distinct from ``/ml/`` API prefix (models, train, profiles, etc.).
     re.compile(r"^/ml-training(?:/[^/]*)?/?$"),
+    re.compile(r"^/alpha-zoo/[^/]+/?$"),
+    re.compile(r"^/strategy-zoo/[^/]+/?$"),
+    re.compile(r"^/industry-chain/[a-f0-9]{12}/?$"),
 )
 
 
@@ -637,6 +668,7 @@ async def _run_startup_preflight() -> None:
     """Run preflight checks on server startup."""
     from src.preflight import run_preflight
 
+    _configured_api_key()
     run_preflight(console)
     _start_scheduled_research_executor()
 
@@ -658,8 +690,8 @@ _DOCKER_LOOPBACK_ENV = "VIBE_TRADING_TRUST_DOCKER_LOOPBACK"
 
 
 def _configured_api_key() -> str:
-    """Return the current API auth key, if configured."""
-    return os.getenv("API_AUTH_KEY") or _API_KEY or ""
+    """Return the explicit key or the private key generated on first start."""
+    return os.getenv("API_AUTH_KEY") or _API_KEY or get_or_create_api_key()
 
 
 async def require_auth(
@@ -681,21 +713,10 @@ async def require_auth(
 
 async def require_event_stream_auth(
     request: Request,
-    api_key: Optional[str] = Query(None),
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
 ) -> None:
-    """Validate auth for browser EventSource streams.
-
-    Native EventSource cannot send custom Authorization headers, so event
-    stream endpoints may accept the API key from the query string. Normal JSON
-    endpoints must continue to use Bearer auth only.
-
-    Args:
-        request: Incoming HTTP request.
-        api_key: Optional query-string API key for EventSource clients.
-        cred: HTTP Bearer credentials extracted from the Authorization header.
-    """
-    _validate_api_auth(request=request, cred=cred, query_api_key=api_key, allow_query=True)
+    """Require Bearer auth for fetch-based event streams."""
+    _validate_api_auth(request=request, cred=cred)
 
 
 def _auth_credential_from_header_or_query(
@@ -778,19 +799,8 @@ def _validate_api_auth(
     query_api_key: Optional[str] = None,
     allow_query: bool = False,
 ) -> None:
-    """Validate configured auth, preserving loopback-only dev mode."""
-    # Loopback clients are always trusted, even when API_AUTH_KEY is set.
-    # The key only gates non-local (LAN/remote) access.
-    if _is_local_client(request):
-        return
-
+    """Validate Bearer authentication without a loopback bypass."""
     api_key = _configured_api_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API_AUTH_KEY is required for non-local API access",
-        )
-
     token = _auth_credential_from_header_or_query(cred, query_api_key, allow_query=allow_query)
     if not token or not hmac.compare_digest(token, api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -869,45 +879,198 @@ async def require_local_or_auth(
     request: Request,
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
 ) -> None:
-    """Protect settings access when dev-mode auth is disabled.
-
-    If API_AUTH_KEY is configured, require the bearer token. If not, allow only
-    loopback clients so an API server bound to 0.0.0.0 cannot accept remote
-    credential reads or writes in dev mode.
-    """
-    if _configured_api_key():
-        await require_auth(request, cred)
-        return
-    if not _is_local_client(request):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Settings access requires API_AUTH_KEY or a local loopback client",
-        )
+    """Backward-compatible dependency name for unified Bearer auth."""
+    await require_auth(request, cred)
 
 
 async def require_settings_write_auth(
     request: Request,
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
 ) -> None:
-    """Require explicit authorization before changing credential-routing settings.
+    """Require unified Bearer auth before credential-routing changes."""
+    await require_auth(request, cred)
 
-    Settings writes can redirect stored provider credentials to a different
-    endpoint. When an API key is configured, loopback peer IP alone is not a
-    sufficient user-intent signal because a browser can reach local APIs after
-    DNS rebinding.
-    """
-    api_key = _configured_api_key()
-    if api_key:
-        token = _auth_credential_from_header_or_query(cred, None, allow_query=False)
-        if not token or not hmac.compare_digest(token, api_key):
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
-        return
 
-    if not _is_local_client(request):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Settings writes require API_AUTH_KEY or a local loopback client",
-        )
+_ANONYMOUS_API_ROUTES = frozenset({"/healthz", "/readyz"})
+_STATIC_PREFIXES = ("/assets/",)
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+        "object-src 'none'; form-action 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self'"
+    ),
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
+
+
+def _is_public_static_request(request: Request) -> bool:
+    if request.method not in {"GET", "HEAD"}:
+        return False
+    path = request.url.path
+    if path.startswith(_STATIC_PREFIXES):
+        candidate = (_FRONTEND_DIST / path.lstrip("/")).resolve()
+        try:
+            candidate.relative_to(_FRONTEND_DIST.resolve())
+        except ValueError:
+            return False
+        return candidate.is_file()
+    if path in {"/", "/favicon.ico", "/vite.svg"}:
+        return True
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and _is_spa_html_route(path) and (_FRONTEND_DIST / "index.html").is_file()
+
+
+def _is_anonymous_request(request: Request) -> bool:
+    if request.method == "OPTIONS":
+        return True
+    return request.url.path in _ANONYMOUS_API_ROUTES or _is_public_static_request(request)
+
+
+def _bearer_token(request: Request) -> str:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def _rate_limit() -> int:
+    try:
+        return max(1, min(int(os.getenv("VIBE_TRADING_RATE_LIMIT_PER_MINUTE", "600")), 100_000))
+    except ValueError:
+        return 600
+
+
+def _secure_response(response, request_id: str):
+    response.headers["X-Request-ID"] = request_id
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers[name] = value
+    if getattr(response, "media_type", None) == "text/event-stream":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+async def healthz() -> Dict[str, str]:
+    """Process liveness probe; intentionally reveals no configuration."""
+    return {"status": "ok"}
+
+
+@app.api_route("/readyz", methods=["GET", "HEAD"], include_in_schema=False)
+async def readyz() -> Dict[str, str]:
+    """Readiness probe; startup key material must be available."""
+    _configured_api_key()
+    return {"status": "ready"}
+
+
+@app.middleware("http")
+async def _unified_api_security_boundary(request: Request, call_next):
+    """Authenticate every non-static route and attach audit/security controls."""
+    started = time.monotonic()
+    request_id = normalize_request_id(request.headers.get("X-Request-ID"))
+    request.state.request_id = request_id
+    client = request.client.host if request.client else "unknown"
+    auth_result = "anonymous"
+    response = None
+    idempotency_claim: str | None = None
+
+    try:
+        if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
+            auth_result = "host-rejected"
+            response = JSONResponse(status_code=403, content={"detail": "Untrusted local API host"})
+            return _secure_response(response, request_id)
+
+        origin = request.headers.get("origin", "")
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and (
+            request.headers.get("sec-fetch-site", "").lower() == "cross-site"
+            or (origin and origin not in _CORS_ORIGINS and not _is_loopback_origin(origin))
+        ):
+            auth_result = "origin-rejected"
+            response = JSONResponse(status_code=403, content={"detail": "Cross-site request denied"})
+            return _secure_response(response, request_id)
+
+        if "api_key" in request.query_params:
+            auth_result = "query-key-rejected"
+            response = JSONResponse(status_code=400, content={"detail": "API keys are not accepted in URLs"})
+            return _secure_response(response, request_id)
+
+        anonymous = _is_anonymous_request(request)
+        token = _bearer_token(request)
+        limiter_key = f"{client}:{'anonymous' if anonymous else 'api'}"
+        allowed, retry_after = rate_limiter.allow(limiter_key, _rate_limit())
+        if not allowed:
+            auth_result = "rate-limited"
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+                headers={"Retry-After": str(retry_after)},
+            )
+            return _secure_response(response, request_id)
+
+        if not anonymous:
+            expected = _configured_api_key()
+            if not token or not hmac.compare_digest(token, expected):
+                auth_result = "rejected"
+                response = JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid or missing API key"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                return _secure_response(response, request_id)
+            auth_result = "bearer"
+
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            raw_idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+            if raw_idempotency_key:
+                idempotency_scope = f"{request.method}:{request.url.path}"
+                idempotency_claim = f"{idempotency_scope}:{raw_idempotency_key}"
+                try:
+                    claimed = idempotency_registry.claim(raw_idempotency_key, scope=idempotency_scope)
+                except ValueError:
+                    response = JSONResponse(status_code=400, content={"detail": "Invalid Idempotency-Key"})
+                    return _secure_response(response, request_id)
+                if not claimed:
+                    response = JSONResponse(
+                        status_code=409,
+                        content={"detail": "Duplicate request blocked"},
+                        headers={"Idempotency-Replayed": "true"},
+                    )
+                    return _secure_response(response, request_id)
+
+        response = await call_next(request)
+        if idempotency_claim and response.status_code >= 500:
+            idempotency_registry.release(idempotency_claim)
+        return _secure_response(response, request_id)
+    finally:
+        if idempotency_claim and (response is None or response.status_code >= 500):
+            idempotency_registry.release(idempotency_claim)
+        try:
+            append_audit_event(
+                {
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "client": client,
+                    "status": response.status_code if response is not None else 500,
+                    "auth": auth_result,
+                    "elapsed_ms": (time.monotonic() - started) * 1000,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Security audit append failed: %s", exc)
+
+
+def build_api_permission_matrix() -> List[Dict[str, Any]]:
+    """Return the effective access classification for every FastAPI route."""
+    matrix: List[Dict[str, Any]] = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        methods = sorted(route.methods or [])
+        access = "anonymous" if route.path in _ANONYMOUS_API_ROUTES else "bearer"
+        matrix.append({"path": route.path, "methods": methods, "access": access})
+    return matrix
 
 
 # ============================================================================
@@ -1360,8 +1523,10 @@ def _validate_path_param(value: str, kind: str) -> None:
         HTTPException: 400 when ``value`` does not match the safe character
             class, mirroring the existing ``_SHADOW_ID_RE`` check.
     """
-    if not _SAFE_PATH_PARAM_RE.fullmatch(value or ""):
-        raise HTTPException(status_code=400, detail=f"invalid {kind}")
+    try:
+        validate_identifier(value, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ============================================================================
@@ -1422,6 +1587,13 @@ async def update_llm_settings(payload: UpdateLLMSettingsRequest):
             base_url = validate_codex_base_url(base_url)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    try:
+        base_url = validate_outbound_url(
+            base_url,
+            allow_loopback=provider.name == "ollama",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     updates: Dict[str, str] = {
         "LANGCHAIN_PROVIDER": provider.name,
         "LANGCHAIN_MODEL_NAME": model_name,
@@ -2023,6 +2195,58 @@ _BLOCKED_UPLOAD_NAMES = {
     "containerfile",
 }
 
+_TEXT_UPLOAD_EXT = {".txt", ".md", ".csv", ".tsv", ".json", ".toml"}
+_OOXML_UPLOAD_EXT = {".docx", ".xlsx", ".pptx"}
+_UPLOAD_MAGIC = {
+    ".pdf": (b"%PDF-",),
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".gif": (b"GIF87a", b"GIF89a"),
+    ".parquet": (b"PAR1",),
+}
+_EXECUTABLE_MAGIC = (
+    b"MZ",
+    b"\x7fELF",
+    b"\xcf\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"#!",
+)
+
+
+def _validate_upload_content(filename: str, content_type: str | None, prefix: bytes) -> None:
+    """Check extension, declared MIME family, and content magic before storage."""
+    ext = Path(filename).suffix.lower()
+    if not ext or ext in _BLOCKED_UPLOAD_EXT or filename.lower() in _BLOCKED_UPLOAD_NAMES:
+        raise HTTPException(status_code=400, detail="This file type is not allowed for upload.")
+    if any(prefix.startswith(magic) for magic in _EXECUTABLE_MAGIC):
+        raise HTTPException(status_code=400, detail="Executable content is not allowed for upload.")
+
+    declared = (content_type or "").split(";", 1)[0].strip().lower()
+    if ext in _TEXT_UPLOAD_EXT:
+        if b"\x00" in prefix:
+            raise HTTPException(status_code=400, detail="Text upload contains binary content.")
+        try:
+            prefix.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Text uploads must be UTF-8.") from exc
+        if declared and declared not in {"text/plain", "text/csv", "text/tab-separated-values", "application/json", "application/toml", "application/octet-stream"}:
+            raise HTTPException(status_code=400, detail="Declared MIME type does not match the file extension.")
+        return
+    if ext in _OOXML_UPLOAD_EXT:
+        if not prefix.startswith(b"PK\x03\x04"):
+            raise HTTPException(status_code=400, detail="Office upload has invalid file magic.")
+        return
+    if ext == ".webp":
+        if len(prefix) < 12 or not (prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"):
+            raise HTTPException(status_code=400, detail="WebP upload has invalid file magic.")
+        return
+    expected = _UPLOAD_MAGIC.get(ext)
+    if expected is None:
+        raise HTTPException(status_code=400, detail="This file type is not allowed for upload.")
+    if not any(prefix.startswith(magic) for magic in expected):
+        raise HTTPException(status_code=400, detail="File content does not match its extension.")
+
 
 _SHADOW_ID_RE = __import__("re").compile(r"^shadow_[0-9a-f]{8}$")
 
@@ -2064,11 +2288,8 @@ async def upload_file(file: UploadFile):
         raise HTTPException(status_code=400, detail="Missing filename")
     filename = Path(file.filename).name
     ext = Path(filename).suffix.lower()
-    if ext in _BLOCKED_UPLOAD_EXT or filename.lower() in _BLOCKED_UPLOAD_NAMES:
-        raise HTTPException(
-            status_code=400,
-            detail="This file type is not allowed for upload.",
-        )
+    first_chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+    _validate_upload_content(filename, file.content_type, first_chunk[:8192])
 
     safe_name = f"{uuid.uuid4().hex}{ext}"
     dest = UPLOADS_DIR / safe_name
@@ -2077,8 +2298,8 @@ async def upload_file(file: UploadFile):
     try:
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         with dest.open("wb") as handle:
+            chunk = first_chunk
             while True:
-                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
                 total_size += len(chunk)
@@ -2091,6 +2312,7 @@ async def upload_file(file: UploadFile):
                         detail=f"File too large (limit {MAX_UPLOAD_SIZE // (1024 * 1024)} MB)",
                     )
                 handle.write(chunk)
+                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
     except HTTPException:
         raise
     except OSError as exc:

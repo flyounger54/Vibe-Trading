@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Build and attack-test the generated-strategy worker with a real Docker daemon.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+IMAGE=${VIBE_TRADING_SANDBOX_IMAGE:-vibe-trading-sandbox:local}
+DOCKER=${VIBE_DOCKER:-$(command -v docker 2>/dev/null || true)}
+
+if [ -z "$DOCKER" ]; then
+  echo "Docker is required for the runtime sandbox escape test" >&2
+  exit 2
+fi
+
+# Keep bind-mount sources under the repository. Docker Desktop/Colima expose the
+# user home to the Linux daemon, while macOS's default /var/folders temp root is
+# intentionally not shared and therefore cannot be used as a bind source.
+TMP=$(mktemp -d "$ROOT/.sandbox-runtime.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT INT TERM
+RUN_DIR="$TMP/current-run"
+OTHER_RUN="$TMP/other-run"
+mkdir -p "$RUN_DIR" "$OTHER_RUN"
+printf 'host-only-secret\n' > "$TMP/host-secret"
+printf 'other-run-secret\n' > "$OTHER_RUN/secret.txt"
+
+cat > "$RUN_DIR/probe.py" <<'PY'
+import json
+import os
+import socket
+from pathlib import Path
+
+checks = {"non_root": os.getuid() != 0}
+try:
+    socket.create_connection(("1.1.1.1", 53), timeout=1).close()
+    checks["network_blocked"] = False
+except OSError:
+    checks["network_blocked"] = True
+
+for name, path in {
+    "host_secret_blocked": Path("/host-secret"),
+    "other_run_blocked": Path("/workspace/other-run/secret.txt"),
+    "shadow_blocked": Path("/etc/shadow"),
+}.items():
+    try:
+        path.read_bytes()
+        checks[name] = False
+    except OSError:
+        checks[name] = True
+
+try:
+    Path("/app/escape-proof").write_text("owned", encoding="utf-8")
+    checks["root_read_only"] = False
+except OSError:
+    checks["root_read_only"] = True
+
+Path("/workspace/run/probe-result.json").write_text(json.dumps(checks), encoding="utf-8")
+raise SystemExit(0 if all(checks.values()) else 1)
+PY
+
+"$DOCKER" build -f "$ROOT/Dockerfile.sandbox" -t "$IMAGE" "$ROOT"
+uid=$(id -u)
+gid=$(id -g)
+if [ "$uid" -eq 0 ]; then
+  uid=65534
+  gid=65534
+  chown -R "$uid:$gid" "$RUN_DIR"
+fi
+"$DOCKER" run --rm \
+  --network=none --read-only --cap-drop=ALL \
+  --security-opt=no-new-privileges --pids-limit=128 \
+  --memory=1g --memory-swap=1g --cpus=1.0 \
+  --ulimit=nofile=256:256 --ulimit=nproc=128:128 \
+  --user="$uid:$gid" \
+  --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m \
+  --mount="type=bind,src=$RUN_DIR,dst=/workspace/run" \
+  --workdir=/app/agent "$IMAGE" python /workspace/run/probe.py
+
+python_bin=${VIBE_PYTHON:-python3}
+"$python_bin" - "$RUN_DIR/probe-result.json" <<'PY'
+import json, sys
+result = json.load(open(sys.argv[1], encoding="utf-8"))
+print(json.dumps(result, sort_keys=True))
+if not result or not all(result.values()):
+    raise SystemExit("sandbox escape assertion failed")
+PY

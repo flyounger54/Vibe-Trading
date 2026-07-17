@@ -1,2 +1,2 @@
-"""Security helpers for tool output sanitization and warning metadata."""
+"""Security boundaries shared by the API and execution workers."""
 

@@ -27,9 +27,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from src.security.boundaries import resolve_within_root, validate_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -118,16 +119,19 @@ def register_ml_routes(
     # -------------------------------------------------------------------
     @app.get("/ml/models/{model_id}", dependencies=[Depends(require_auth)])
     async def get_model_api(model_id: str):
-        from src.ml.storage import list_models
         from pathlib import Path
 
         models_dir = Path.home() / ".vibe-trading" / "models"
-        meta_path = models_dir / model_id / "metadata.json"
+        try:
+            model_dir = resolve_within_root(models_dir, model_id, kind="model_id")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        meta_path = model_dir / "metadata.json"
         if not meta_path.exists():
             raise HTTPException(404, f"Model {model_id} not found")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
-        log_path = models_dir / model_id / "train_log.jsonl"
+        log_path = model_dir / "train_log.jsonl"
         train_log = []
         if log_path.exists():
             for line in log_path.read_text(encoding="utf-8").strip().split("\n"):
@@ -145,7 +149,10 @@ def register_ml_routes(
         from pathlib import Path
 
         models_dir = Path.home() / ".vibe-trading" / "models"
-        model_dir = models_dir / model_id
+        try:
+            model_dir = resolve_within_root(models_dir, model_id, kind="model_id")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if not model_dir.exists():
             raise HTTPException(404, f"Model {model_id} not found")
         shutil.rmtree(model_dir)
@@ -194,6 +201,10 @@ def register_ml_routes(
     # -------------------------------------------------------------------
     @app.get("/ml/train/{job_id}/stream", dependencies=[Depends(require_event_stream_auth)])
     async def train_stream_api(job_id: str):
+        try:
+            validate_identifier(job_id, "job_id")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if job_id not in ML_TRAIN_JOBS:
             raise HTTPException(404, f"Job {job_id} not found")
 

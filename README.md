@@ -486,7 +486,7 @@ docker compose up --build
 
 Open `http://localhost:8899`. Backend + frontend in one container.
 
-Docker publishes the backend on `127.0.0.1:8899` by default and runs the app as a non-root container user. If you intentionally expose the API beyond your own machine, set a strong `API_AUTH_KEY` and send `Authorization: Bearer <key>` from clients.
+Docker publishes the backend on `127.0.0.1:8899` by default and runs the app as a non-root container user. Every API route except `/healthz` and `/readyz` requires Bearer authentication, including loopback traffic. Set `API_AUTH_KEY`, or use the 256-bit key generated on first startup at `~/.vibe-trading/security/api.key` (mode `0600`), then enter it once in Web UI Settings.
 
 > [!NOTE]
 > **Using Ollama with Docker:** the container reaches a host-side Ollama via `host.docker.internal`, not `localhost` (inside the container `localhost` is the container itself). `docker-compose.yml` defaults `OLLAMA_BASE_URL` to `http://host.docker.internal:11434`; export `OLLAMA_BASE_URL` (or set it in a top-level `.env`) to point elsewhere. This relies on the `host-gateway` mapping in `extra_hosts`, which requires **Docker Engine ≥ 20.10 / Compose v2** (provided automatically on Docker Desktop).
@@ -530,7 +530,7 @@ vibe-trading serve --port 8899     # FastAPI serves dist/ as static files
 ```
 
 > [!NOTE]
-> `vibe-trading serve` binds `0.0.0.0` and is loopback-only by default: opening the UI on the **same machine** (`http://localhost:8899`) works with zero config. If you browse from **another machine, a VM host, or a phone on your LAN**, sensitive endpoints return `403` and the chat shows "Remote API access requires an API key" — set a strong `API_AUTH_KEY` in `agent/.env`, restart, and enter the same key once in **Settings**. (Docker Desktop's host gateway: set `VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1` with the default `127.0.0.1` port bind.)
+> `vibe-trading serve` binds `0.0.0.0`. The SPA and liveness probes are public, but all application APIs require the same Bearer key on localhost, LAN, and remote clients. If `API_AUTH_KEY` is not configured, read the generated key from `~/.vibe-trading/security/api.key` and enter it in **Settings**.
 
 </details>
 
@@ -560,10 +560,12 @@ Copy `agent/.env.example` to `agent/.env` and uncomment the provider block you w
 | `LANGCHAIN_MODEL_NAME` | Yes | Model name (e.g. `deepseek-v4-pro`) |
 | `TUSHARE_TOKEN` | No | Tushare Pro token for A-share data (falls back to AKShare) |
 | `TIMEOUT_SECONDS` | No | LLM call timeout, default 120s |
-| `API_AUTH_KEY` | Recommended for network deployments | Bearer token required when the API is reachable from non-local clients |
+| `API_AUTH_KEY` | No | Explicit Bearer token; otherwise a private 256-bit local key is generated on first startup |
 | `VIBE_TRADING_ENABLE_SHELL_TOOLS` | No | Explicit opt-in for shell-capable tools in remote API/MCP-SSE style deployments |
 | `VIBE_TRADING_ALLOWED_FILE_ROOTS` | No | Extra comma-separated roots for document and broker-journal imports |
 | `VIBE_TRADING_ALLOWED_RUN_ROOTS` | No | Extra comma-separated roots for generated-code run directories |
+| `VIBE_TRADING_SANDBOX_IMAGE` | No | Generated-strategy worker image (default `vibe-trading-sandbox:local`) |
+| `VIBE_TRADING_EXECUTION_MODE` | No | `container` by default; `dangerous-local` is an explicit unsafe emergency bypass |
 
 <sub>* Ollama does not require an API key. OpenAI Codex uses ChatGPT OAuth and stores tokens via `oauth-cli-kit`, not in `agent/.env`.</sub>
 
@@ -774,7 +776,9 @@ Interactive docs: `http://localhost:8899/docs`
 
 ### Security defaults
 
-For localhost development, `vibe-trading serve` keeps the browser workflow simple. For any non-local client, sensitive API endpoints require `API_AUTH_KEY`; use `Authorization: Bearer <key>` for JSON/upload requests. Browser EventSource streams are handled by the Web UI after you enter the same key once in Settings.
+All API endpoints except `/healthz` and `/readyz` require `Authorization: Bearer <key>`; loopback addresses are not an authentication bypass. Browser event streams use authenticated `fetch` and never place long-term keys in URLs. Static SPA assets remain public so the key can be entered in Settings.
+
+Generated strategies run in an isolated worker by default. Build it once with `docker build -f Dockerfile.sandbox -t vibe-trading-sandbox:local .`. The worker has no network, a read-only root filesystem, no Linux capabilities, a non-root UID, and CPU/memory/PID/time/output limits; only the current run directory is writable. If Docker is unavailable, generated code fails closed. `VIBE_TRADING_EXECUTION_MODE=dangerous-local` deliberately removes that protection and must not be used on shared or network services.
 
 Shell-capable tools are available to local CLI and trusted localhost workflows, but are not exposed to remote API sessions unless you explicitly set `VIBE_TRADING_ENABLE_SHELL_TOOLS=1`. Document and journal readers are limited to upload/import roots by default; place files under `agent/uploads`, `agent/runs`, `./uploads`, `./data`, `~/.vibe-trading/uploads`, or `~/.vibe-trading/imports`, or add a dedicated directory through `VIBE_TRADING_ALLOWED_FILE_ROOTS`.
 
@@ -782,7 +786,7 @@ Shell-capable tools are available to local CLI and trusted localhost workflows, 
 
 The Web UI Settings page lets local users update the LLM provider/model, base URL, generation parameters, reasoning effort, and optional market data credentials such as the Tushare token. Settings are persisted to `agent/.env`; provider defaults are loaded from `agent/src/providers/llm_providers.json`.
 
-Settings reads are side-effect free: `GET /settings/llm` and `GET /settings/data-sources` never create `agent/.env`, and they only return project-relative paths. Settings reads and writes can expose credential state or update credentials/runtime environment, so they require `API_AUTH_KEY` when configured. If `API_AUTH_KEY` is unset for dev mode, settings access is accepted only from loopback clients.
+Settings reads are side-effect free: `GET /settings/llm` and `GET /settings/data-sources` never create `agent/.env`, and they only return project-relative paths. Settings reads and writes can expose credential state or update credentials/runtime environment, so they always require the API Bearer key.
 
 ---
 

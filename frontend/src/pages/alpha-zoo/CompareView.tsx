@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowLeftRight, Loader2, CheckCircle2, AlertTriangle } from 
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { api, type AlphaCompareResult } from "@/lib/api";
+import { AuthenticatedEventStream } from "@/lib/fetchSSE";
 import { UNIVERSE_OPTIONS, fmtNum } from "./constants";
 import { ProgressPanel, type BenchStatus, type BenchProgress } from "./BenchView";
 
@@ -45,7 +46,7 @@ export function CompareView() {
   const [progress, setProgress] = useState<BenchProgress | null>(null);
   const [result, setResult] = useState<AlphaCompareResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const sourceRef = useRef<EventSource | null>(null);
+  const sourceRef = useRef<AuthenticatedEventStream | null>(null);
   const doneRef = useRef(false);
 
   const ids = useMemo(() => parseAlphaIds(idsText), [idsText]);
@@ -59,7 +60,7 @@ export function CompareView() {
 
   const attachStream = (newJobId: string) => {
     setStatus("streaming");
-    const source = new EventSource(api.alphaCompareStreamUrl(newJobId));
+    const source = new AuthenticatedEventStream(api.alphaCompareStreamUrl(newJobId));
     sourceRef.current = source;
 
     source.addEventListener("progress", (e) => {
@@ -83,7 +84,7 @@ export function CompareView() {
       sourceRef.current = null;
     });
     source.addEventListener("error", (e) => {
-      // EventSource raises a synthetic error on the close that follows `done`;
+      // The stream transport reports the close that follows `done`;
       // the ref check (synchronous) is the only reliable race guard.
       if (doneRef.current) {
         source.close();

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from typing import Any
 
@@ -40,9 +41,12 @@ class BashTool(BaseTool):
         cwd = kwargs.get("run_dir")
 
         try:
+            argv = shlex.split(command)
+            if not argv:
+                raise ValueError("Command cannot be empty")
             result = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

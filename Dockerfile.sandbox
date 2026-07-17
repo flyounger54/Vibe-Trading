@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+LABEL org.opencontainers.image.title="Vibe-Trading sandbox worker" \
+      org.opencontainers.image.description="Networkless worker image for generated backtests"
+
+WORKDIR /app
+
+COPY requirements.lock pyproject.toml LICENSE README.md ./
+RUN pip install --no-cache-dir -r requirements.lock
+
+COPY agent/ agent/
+RUN pip install --no-cache-dir --no-deps -e . \
+    && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin sandbox
+
+USER sandbox
+WORKDIR /app/agent
+CMD ["python", "--version"]

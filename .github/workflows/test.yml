@@ -43,7 +43,7 @@ jobs:
         # (real-LLM only); list --ignore here so CI's intent is explicit and
         # the suite never silently switches state on env presence.
         run: |
-          python scripts/check_node0_collection.py wiki/docs/upgrade/node-2-known-collection-errors.txt 4326
+          python scripts/check_node0_collection.py wiki/docs/upgrade/node-2-known-collection-errors.txt 4381
           python scripts/generate-api-contracts --check
           pytest --ignore=agent/tests/e2e_backtest --ignore=agent/tests/test_e2e_harness_v2.py --cov=agent --cov-report=term-missing --cov-report=xml --tb=short -q
 
@@ -71,4 +71,14 @@ jobs:
           npm run build
 
       - name: Frontend tests
-        run: python scripts/check_node0_frontend.py wiki/docs/upgrade/node-1-known-frontend-failures.txt 27 227
+        run: python scripts/check_node0_frontend.py wiki/docs/upgrade/node-1-known-frontend-failures.txt 28 227
+
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build and attack-test isolated strategy worker
+        run: scripts/test-sandbox-runtime

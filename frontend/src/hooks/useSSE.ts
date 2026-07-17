@@ -3,6 +3,7 @@
  */
 
 import { useCallback, useRef } from "react";
+import { AuthenticatedEventStream } from "@/lib/fetchSSE";
 
 type EventHandler = (data: Record<string, unknown>) => void;
 type Handlers = Record<string, EventHandler>;
@@ -25,7 +26,7 @@ const DEFAULTS: Required<SSEConfig> = {
 
 export function useSSE(config?: SSEConfig) {
   const opts = { ...DEFAULTS, ...config };
-  const sourceRef = useRef<EventSource | null>(null);
+  const sourceRef = useRef<AuthenticatedEventStream | null>(null);
   const handlersRef = useRef<Handlers>({});
   const urlRef = useRef<string>("");
   const closedRef = useRef(true);
@@ -58,17 +59,9 @@ export function useSSE(config?: SSEConfig) {
     onStatusChangeRef.current?.(s);
   }, []);
 
-  const buildUrl = useCallback((baseUrl: string) => {
-    const sep = baseUrl.includes("?") ? "&" : "?";
-    if (lastEventIdRef.current) {
-      return `${baseUrl}${sep}Last-Event-ID=${encodeURIComponent(lastEventIdRef.current)}`;
-    }
-    return baseUrl;
-  }, []);
-
   const listenersRef = useRef<Array<[string, EventListener]>>([]);
 
-  const cleanupSource = useCallback((source: EventSource) => {
+  const cleanupSource = useCallback((source: AuthenticatedEventStream) => {
     for (const [type, fn] of listenersRef.current) {
       source.removeEventListener(type, fn);
     }
@@ -86,8 +79,9 @@ export function useSSE(config?: SSEConfig) {
       sourceRef.current = null;
     }
 
-    const url = buildUrl(urlRef.current);
-    const source = new EventSource(url);
+    const source = new AuthenticatedEventStream(urlRef.current, {
+      lastEventId: lastEventIdRef.current,
+    });
     sourceRef.current = source;
 
     source.onopen = () => {
@@ -137,7 +131,7 @@ export function useSSE(config?: SSEConfig) {
       sourceRef.current = null;
       scheduleReconnect();
     };
-  }, [buildUrl, cleanupSource, trackEventId, setStatus]);
+  }, [cleanupSource, trackEventId, setStatus]);
 
   const scheduleReconnect = useCallback(() => {
     if (closedRef.current) return;

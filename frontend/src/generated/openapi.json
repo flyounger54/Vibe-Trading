@@ -3133,22 +3133,6 @@
               "title": "Job Id",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
-            }
           }
         ],
         "responses": {
@@ -3237,22 +3221,6 @@
             "schema": {
               "title": "Job Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
             }
           }
         ],
@@ -3511,22 +3479,6 @@
               "title": "Job Id",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
-            }
           }
         ],
         "responses": {
@@ -3621,22 +3573,6 @@
             "schema": {
               "title": "Job Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
             }
           }
         ],
@@ -5202,22 +5138,6 @@
               "title": "Job Id",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
-            }
           }
         ],
         "responses": {
@@ -5914,22 +5834,6 @@
                 }
               ],
               "title": "Replay"
-            }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
             }
           }
         ],
@@ -6708,22 +6612,6 @@
               "minimum": 0,
               "title": "Last Index",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
             }
           }
         ],
@@ -8387,22 +8275,6 @@
               "title": "Job Id",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
-            }
           }
         ],
         "responses": {
@@ -9121,22 +8993,6 @@
                 }
               ],
               "title": "Replay"
-            }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
             }
           }
         ],
@@ -10096,22 +9952,6 @@
               "minimum": 0,
               "title": "Last Index",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "api_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Api Key"
             }
           }
         ],

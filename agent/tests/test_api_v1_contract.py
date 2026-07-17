@@ -49,14 +49,14 @@ def test_v1_and_legacy_session_contracts_are_equivalent(monkeypatch, tmp_path: P
 def test_v1_errors_use_stable_envelope_while_legacy_shape_remains(monkeypatch, tmp_path: Path) -> None:
     client = _client(monkeypatch, tmp_path)
     try:
-        versioned = client.get("/api/v1/sessions/missing")
-        legacy = client.get("/sessions/missing")
+        versioned = client.get("/api/v1/sessions/deadbeefcafe")
+        legacy = client.get("/sessions/deadbeefcafe")
 
         assert versioned.status_code == legacy.status_code == 404
         assert versioned.json()["code"] == "not_found"
         assert versioned.json()["retryable"] is False
         assert versioned.json()["request_id"] == versioned.headers["X-Request-ID"]
-        assert legacy.json() == {"detail": "Session missing not found"}
+        assert legacy.json() == {"detail": "Session deadbeefcafe not found"}
     finally:
         api_server.app.dependency_overrides.clear()
 

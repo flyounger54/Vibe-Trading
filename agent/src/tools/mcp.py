@@ -684,11 +684,11 @@ def _dedupe_server_name_segment(base_segment: str, server_name: str, used_segmen
         Unique local server-name segment.
     """
     suffix_source = server_name.encode("utf-8")
-    unique_segment = f"{base_segment}_{hashlib.sha1(suffix_source).hexdigest()[:8]}"
+    unique_segment = f"{base_segment}_{hashlib.sha1(suffix_source, usedforsecurity=False).hexdigest()[:8]}"
     salt = 1
     while unique_segment in used_segments:
         unique_segment = (
-            f"{base_segment}_{hashlib.sha1(suffix_source + f':{salt}'.encode('utf-8')).hexdigest()[:8]}"
+            f"{base_segment}_{hashlib.sha1(suffix_source + f':{salt}'.encode('utf-8'), usedforsecurity=False).hexdigest()[:8]}"
         )
         salt += 1
     return unique_segment
@@ -713,10 +713,10 @@ def _dedupe_local_tool_name(candidate: str, remote_name: str, seen_names: dict[s
         return candidate
 
     suffix_source = remote_name.encode("utf-8")
-    unique_name = f"{candidate}_{hashlib.sha1(suffix_source).hexdigest()[:8]}"
+    unique_name = f"{candidate}_{hashlib.sha1(suffix_source, usedforsecurity=False).hexdigest()[:8]}"
     salt = 1
     while unique_name in seen_names and seen_names[unique_name] != remote_name:
-        unique_name = f"{candidate}_{hashlib.sha1(suffix_source + f':{salt}'.encode('utf-8')).hexdigest()[:8]}"
+        unique_name = f"{candidate}_{hashlib.sha1(suffix_source + f':{salt}'.encode('utf-8'), usedforsecurity=False).hexdigest()[:8]}"
         salt += 1
 
     logger.warning("Disambiguated MCP tool name collision: %s -> %s", remote_name, unique_name)

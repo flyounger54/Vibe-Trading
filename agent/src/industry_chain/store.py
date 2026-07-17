@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.config.paths import get_runtime_root
+from src.security.boundaries import resolve_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,7 @@ class IndustryChainStore:
             return []
         chains: List[Chain] = []
         for child in self.root.iterdir():
-            if not child.is_dir():
+            if not child.is_dir() or child.is_symlink():
                 continue
             chain = self._load_chain_file(child / _CHAIN_FILENAME)
             if chain is not None:
@@ -364,7 +365,7 @@ class IndustryChainStore:
 
     def _chain_dir(self, chain_id: str) -> Path:
         """Return the directory for a chain (not necessarily existing)."""
-        return self.root / chain_id
+        return resolve_within_root(self.root, chain_id, kind="chain_id")
 
     def _load_chain_file(self, path: Path) -> Optional[Chain]:
         """Load and parse a chain.json file, or None on missing/corrupt."""

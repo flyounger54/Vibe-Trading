@@ -1,4 +1,4 @@
-import { authHeaders, withAuthQuery } from "@/lib/apiAuth";
+import { authHeaders } from "@/lib/apiAuth";
 import type {
   AddGoalEvidenceRequest as GeneratedAddGoalEvidenceRequest,
   AddGoalEvidenceResponse as GeneratedAddGoalEvidenceResponse,
@@ -31,7 +31,7 @@ export class ApiError extends Error {
 }
 
 export const AUTH_REQUIRED_MESSAGE =
-  "Remote API access requires an API key. Add it in Settings, or run the backend on localhost for local-only use.";
+  "API access requires a Bearer key, including on localhost. Add API_AUTH_KEY in Settings or use the key generated at ~/.vibe-trading/security/api.key.";
 
 export function isAuthRequiredError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 401 || error.status === 403);
@@ -196,7 +196,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   sseUrl: (sid: string, options?: { replay?: "active" }) => {
-    let url = withAuthQuery(`${BASE}/sessions/${sid}/events`);
+    let url = `${BASE}/sessions/${sid}/events`;
     if (options?.replay) url = appendQueryParam(url, "replay", options.replay);
     return url;
   },
@@ -210,7 +210,7 @@ export const api = {
     }),
   listSwarmRuns: () => request<SwarmRunSummary[]>("/swarm/runs"),
   getSwarmRun: (id: string) => request<Record<string, unknown>>(`/swarm/runs/${id}`),
-  swarmSseUrl: (id: string) => withAuthQuery(`${BASE}/swarm/runs/${id}/events`),
+  swarmSseUrl: (id: string) => `${BASE}/swarm/runs/${id}/events`,
   cancelSwarmRun: (id: string) =>
     request<{ status: string }>(`/swarm/runs/${id}/cancel`, { method: "POST" }),
   retrySwarmRun: (id: string) =>
@@ -246,7 +246,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   alphaBenchStreamUrl: (jobId: string) =>
-    withAuthQuery(`${BASE}/alpha/bench/${encodeURIComponent(jobId)}/stream`),
+    `${BASE}/alpha/bench/${encodeURIComponent(jobId)}/stream`,
 
   // Strategy Zoo API
   listStrategies: (params: StrategyListParams = {}) => {
@@ -266,7 +266,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   alphaCompareStreamUrl: (jobId: string) =>
-    withAuthQuery(`${BASE}/alpha/compare/${encodeURIComponent(jobId)}/stream`),
+    `${BASE}/alpha/compare/${encodeURIComponent(jobId)}/stream`,
 
   // Connector runtime channel — privileged surface actions (NOT agent tools).
   // commit is the ONLY action that writes a mandate; halt trips the kill switch.
@@ -313,7 +313,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   mlTrainStreamUrl: (jobId: string) =>
-    withAuthQuery(`${BASE}/ml/train/${encodeURIComponent(jobId)}/stream`),
+    `${BASE}/ml/train/${encodeURIComponent(jobId)}/stream`,
   listFeatureProfiles: () =>
     request<MLProfilesResponse>("/ml/profiles"),
   createFeatureProfile: (body: MLSelectFeaturesRequest) =>

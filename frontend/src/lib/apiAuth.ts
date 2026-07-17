@@ -30,14 +30,3 @@ export function authHeaders(): Record<string, string> {
   const key = getApiAuthKey();
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
-
-export function authQuerySuffix(): string {
-  const key = getApiAuthKey();
-  return key ? `api_key=${encodeURIComponent(key)}` : "";
-}
-
-export function withAuthQuery(url: string): string {
-  const suffix = authQuerySuffix();
-  if (!suffix) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${suffix}`;
-}

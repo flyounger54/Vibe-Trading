@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -120,7 +119,7 @@ class FeatureCache:
 
     def _make_key(self, zoo: str, universe: str, factor_ids: list[str]) -> str:
         raw = f"{zoo}:{universe}:{','.join(sorted(factor_ids))}"
-        return hashlib.md5(raw.encode()).hexdigest()[:12]
+        return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:12]
 
     def _compute_content_hash(self, zoo: str, factor_ids: list[str]) -> str:
         """Hash factor source code to detect definition changes."""
@@ -133,9 +132,9 @@ class FeatureCache:
                     sources.append(registry.get_source(fid))
                 except Exception:
                     sources.append(fid)
-            return hashlib.md5("".join(sources).encode()).hexdigest()[:16]
+            return hashlib.md5("".join(sources).encode(), usedforsecurity=False).hexdigest()[:16]
         except Exception:
-            return hashlib.md5(",".join(sorted(factor_ids)).encode()).hexdigest()[:16]
+            return hashlib.md5(",".join(sorted(factor_ids)).encode(), usedforsecurity=False).hexdigest()[:16]
 
     def _get_panel_dates(self, panel: dict[str, pd.DataFrame]) -> list:
         for df in panel.values():
@@ -224,7 +223,6 @@ class LabelCache:
         universe: str,
     ) -> tuple[pd.Series, bool]:
         """Return (labels, cache_hit)."""
-        from src.ml.base_model import LabelConfig
         from src.ml.labels import build_labels
 
         cache_key = self._make_key(config, universe)
@@ -249,4 +247,4 @@ class LabelCache:
 
     def _make_key(self, config: Any, universe: str) -> str:
         raw = f"{config.horizon}:{config.label_type}:{config.benchmark}:{config.cost_bps}:{universe}"
-        return hashlib.md5(raw.encode()).hexdigest()[:12]
+        return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:12]

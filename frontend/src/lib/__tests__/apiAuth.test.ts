@@ -1,4 +1,4 @@
-import { getApiAuthKey, setApiAuthKey, authHeaders, authQuerySuffix, withAuthQuery } from "../apiAuth";
+import { getApiAuthKey, setApiAuthKey, authHeaders } from "../apiAuth";
 
 describe("apiAuth", () => {
   beforeEach(() => {
@@ -54,27 +54,4 @@ describe("apiAuth", () => {
     });
   });
 
-  describe("authQuerySuffix", () => {
-    it("returns empty string when no key", () => {
-      expect(authQuerySuffix()).toBe("");
-    });
-    it("returns encoded query param when key exists", () => {
-      setApiAuthKey("key with spaces");
-      expect(authQuerySuffix()).toBe("api_key=key%20with%20spaces");
-    });
-  });
-
-  describe("withAuthQuery", () => {
-    it("returns url unchanged when no key", () => {
-      expect(withAuthQuery("https://api.com/data")).toBe("https://api.com/data");
-    });
-    it("appends with ? when url has no query string", () => {
-      setApiAuthKey("abc");
-      expect(withAuthQuery("https://api.com/data")).toBe("https://api.com/data?api_key=abc");
-    });
-    it("appends with & when url already has query string", () => {
-      setApiAuthKey("abc");
-      expect(withAuthQuery("https://api.com/data?foo=bar")).toBe("https://api.com/data?foo=bar&api_key=abc");
-    });
-  });
 });

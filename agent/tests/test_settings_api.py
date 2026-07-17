@@ -35,7 +35,6 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(api_server, "ENV_EXAMPLE_PATH", env_example)
     monkeypatch.setattr(api_server, "_baostock_supported", lambda: False)
     monkeypatch.setattr(api_server, "_baostock_installed", lambda: False)
-    monkeypatch.delenv("API_AUTH_KEY", raising=False)
     return TestClient(api_server.app, client=("127.0.0.1", 50000))
 
 
@@ -187,13 +186,13 @@ def test_settings_reads_reject_remote_dev_mode_clients(
     llm_response = remote_client.get("/settings/llm")
     data_source_response = remote_client.get("/settings/data-sources")
 
-    assert llm_response.status_code == 403
-    assert data_source_response.status_code == 403
+    assert llm_response.status_code == 401
+    assert data_source_response.status_code == 401
     assert "or-s...alue" not in llm_response.text
     assert "ts-s...oken" not in data_source_response.text
 
 
-def test_settings_reads_allow_loopback_without_bearer_even_when_api_auth_key_configured(
+def test_settings_reads_require_bearer_on_loopback_when_api_auth_key_configured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env_path = tmp_path / ".env"
@@ -214,13 +213,13 @@ def test_settings_reads_allow_loopback_without_bearer_even_when_api_auth_key_con
     monkeypatch.setenv("API_AUTH_KEY", "settings-secret")
     local_client = TestClient(api_server.app, client=("127.0.0.1", 50000))
 
-    unauthenticated_response = local_client.get("/settings/llm")
+    unauthenticated_response = local_client.get("/settings/llm", headers={"Authorization": ""})
     authenticated_response = local_client.get(
         "/settings/llm",
         headers={"Authorization": "Bearer settings-secret"},
     )
 
-    assert unauthenticated_response.status_code == 200
+    assert unauthenticated_response.status_code == 401
     assert authenticated_response.status_code == 200
     assert authenticated_response.json()["api_key_configured"] is True
     assert authenticated_response.json()["api_key_hint"] is None
@@ -263,5 +262,5 @@ def test_settings_writes_reject_remote_dev_mode_clients(
         json={"tushare_token": "ts-secret-token"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 401
     assert not env_path.exists()

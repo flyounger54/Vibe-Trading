@@ -1,73 +1,75 @@
 import { renderHook, act } from "@testing-library/react";
 import { useSSE } from "../useSSE";
 
-// ── Mock EventSource ──────────────────────────────────────
-
 type ESHandler = (e: MessageEvent) => void;
 
-class MockEventSource {
-  url: string;
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  private listeners = new Map<string, ESHandler[]>();
+const { MockEventSource } = vi.hoisted(() => {
+  class MockStream {
+    url: string;
+    options: { lastEventId?: string | null };
+    onopen: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    private listeners = new Map<string, ESHandler[]>();
 
-  constructor(url: string) {
-    this.url = url;
-    MockEventSource.instances.push(this);
-  }
+    constructor(url: string, options: { lastEventId?: string | null } = {}) {
+      this.url = url;
+      this.options = options;
+      MockStream.instances.push(this);
+    }
 
-  addEventListener(type: string, handler: ESHandler) {
-    if (!this.listeners.has(type)) this.listeners.set(type, []);
-    this.listeners.get(type)!.push(handler);
-  }
+    addEventListener(type: string, handler: ESHandler) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type)!.push(handler);
+    }
 
-  removeEventListener(type: string, handler: ESHandler) {
-    const handlers = this.listeners.get(type);
-    if (handlers) {
-      const idx = handlers.indexOf(handler);
-      if (idx >= 0) handlers.splice(idx, 1);
+    removeEventListener(type: string, handler: ESHandler) {
+      const handlers = this.listeners.get(type);
+      if (handlers) {
+        const idx = handlers.indexOf(handler);
+        if (idx >= 0) handlers.splice(idx, 1);
+      }
+    }
+
+    emit(type: string, data: unknown, lastEventId?: string) {
+      const event = new MessageEvent(type, { data: JSON.stringify(data) });
+      Object.defineProperty(event, "lastEventId", { value: lastEventId || "" });
+      const handlers = this.listeners.get(type) || [];
+      handlers.forEach((h) => h(event));
+    }
+
+    close() {
+      this.listeners.clear();
+    }
+
+    static instances: MockStream[] = [];
+
+    static reset() {
+      this.instances = [];
+    }
+
+    static get latest(): MockStream {
+      return this.instances[this.instances.length - 1];
     }
   }
 
-  /** Test helper: simulate an event from the server */
-  emit(type: string, data: unknown, lastEventId?: string) {
-    const event = new MessageEvent(type, { data: JSON.stringify(data) });
-    Object.defineProperty(event, "lastEventId", { value: lastEventId || "" });
-    const handlers = this.listeners.get(type) || [];
-    handlers.forEach((h) => h(event));
-  }
+  return { MockEventSource: MockStream };
+});
 
-  close() {
-    this.listeners.clear();
-  }
-
-  // ── Static helpers ──
-  static instances: MockEventSource[] = [];
-
-  static reset() {
-    this.instances = [];
-  }
-
-  static get latest(): MockEventSource {
-    return this.instances[this.instances.length - 1];
-  }
-}
+vi.mock("@/lib/fetchSSE", () => ({ AuthenticatedEventStream: MockEventSource }));
 
 beforeEach(() => {
   MockEventSource.reset();
-  vi.stubGlobal("EventSource", MockEventSource);
   vi.useFakeTimers();
 });
 
 afterEach(() => {
   vi.useRealTimers();
-  vi.unstubAllGlobals();
 });
 
 // ── Tests ─────────────────────────────────────────────────
 
 describe("useSSE — connect/disconnect", () => {
-  it("creates an EventSource on connect", () => {
+  it("creates an authenticated fetch stream on connect", () => {
     const { result } = renderHook(() => useSSE());
     act(() => result.current.connect("http://test/events", {}));
     expect(MockEventSource.instances).toHaveLength(1);
@@ -268,7 +270,7 @@ describe("useSSE — exponential backoff", () => {
     expect(reconnects[0]).toEqual({ attempt: 1, delayMs: 100 });
     expect(result.current.getStatus()).toBe("reconnecting");
 
-    // Advance timer past the delay → should create a new EventSource
+    // Advance timer past the delay → should create a new fetch stream
     act(() => vi.advanceTimersByTime(150));
     expect(MockEventSource.instances.length).toBeGreaterThan(1);
   });
@@ -313,8 +315,8 @@ describe("useSSE — Last-Event-ID resume", () => {
     act(() => MockEventSource.latest.onerror?.());
     act(() => vi.advanceTimersByTime(2000));
 
-    // The new EventSource should have Last-Event-ID in the URL
-    const newUrl = MockEventSource.latest.url;
-    expect(newUrl).toContain("Last-Event-ID=resume-42");
+    // Resume metadata is sent as a header by the fetch transport, never in the URL.
+    expect(MockEventSource.latest.url).toBe("http://test/events");
+    expect(MockEventSource.latest.options.lastEventId).toBe("resume-42");
   });
 });

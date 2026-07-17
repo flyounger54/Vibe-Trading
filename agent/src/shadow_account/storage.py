@@ -51,7 +51,7 @@ def new_shadow_id() -> str:
 def hash_journal(journal_path: Path | str) -> str:
     """SHA1 over the raw journal bytes for idempotent extraction."""
     p = Path(journal_path)
-    h = hashlib.sha1()
+    h = hashlib.sha1(usedforsecurity=False)
     with p.open("rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,6 +124,123 @@ class Runner:
         self.timeout = timeout
         self.artifacts_spec = artifacts_spec or _ARTIFACTS_SPEC
         self.artifact_entries = _expand_artifacts_spec(self.artifacts_spec)
+        self.max_output_bytes = max(
+            1024,
+            min(int(os.getenv("VIBE_TRADING_MAX_RUN_OUTPUT_BYTES", "1048576")), 16 * 1024 * 1024),
+        )
+
+    @staticmethod
+    def _execution_mode() -> str:
+        mode = os.getenv("VIBE_TRADING_EXECUTION_MODE", "container").strip().lower()
+        if mode not in {"container", "dangerous-local"}:
+            return "container"
+        return mode
+
+    @staticmethod
+    def _sandbox_image() -> str:
+        return os.getenv("VIBE_TRADING_SANDBOX_IMAGE", "vibe-trading-sandbox:local").strip() or "vibe-trading-sandbox:local"
+
+    def _container_command(
+        self,
+        entry_script: Path,
+        run_dir: Path,
+        cli_args: list[str] | None,
+    ) -> list[str]:
+        docker = shutil.which("docker")
+        if not docker:
+            raise RuntimeError(
+                "Container sandbox is unavailable; generated strategies were not executed. "
+                "Install Docker or explicitly set VIBE_TRADING_EXECUTION_MODE=dangerous-local."
+            )
+        repo_root = Path(__file__).resolve().parents[3]
+        try:
+            entry_rel = entry_script.resolve().relative_to(repo_root)
+        except ValueError as exc:
+            raise RuntimeError("Sandbox entry script must belong to the Vibe-Trading project") from exc
+        uid = os.getuid() if hasattr(os, "getuid") else 65534
+        gid = os.getgid() if hasattr(os, "getgid") else 65534
+        if uid == 0:
+            uid = gid = 65534
+        resolved_run = run_dir.resolve()
+        mapped_args: list[str] = []
+        for arg in cli_args or []:
+            try:
+                rel = Path(arg).resolve().relative_to(resolved_run)
+            except (OSError, ValueError):
+                mapped_args.append(arg)
+            else:
+                mapped_args.append(str(Path("/workspace/run") / rel))
+        return [
+            docker,
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--pids-limit=128",
+            "--memory=1g",
+            "--memory-swap=1g",
+            "--cpus=1.0",
+            "--ulimit=nofile=256:256",
+            "--ulimit=nproc=128:128",
+            f"--user={uid}:{gid}",
+            "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m",
+            f"--mount=type=bind,src={resolved_run},dst=/workspace/run",
+            "--workdir=/app/agent",
+            self._sandbox_image(),
+            "python",
+            str(Path("/app") / entry_rel),
+            *mapped_args,
+        ]
+
+    def _run_capped(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+    ) -> tuple[int, str, str]:
+        """Run a worker while continuously draining and capping both outputs."""
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd is not None else None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        captured: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+
+        def drain(name: str, stream) -> None:
+            while True:
+                chunk = stream.read(8192)
+                if not chunk:
+                    return
+                remaining = self.max_output_bytes - len(captured[name])
+                if remaining > 0:
+                    captured[name].extend(chunk[:remaining])
+
+        threads = [
+            threading.Thread(target=drain, args=("stdout", process.stdout), daemon=True),
+            threading.Thread(target=drain, args=("stderr", process.stderr), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            exit_code = process.wait(timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            exit_code = 124
+            captured["stderr"].extend(b"\nExecution timed out and was terminated.")
+        for thread in threads:
+            thread.join(timeout=5)
+        return (
+            exit_code,
+            captured["stdout"].decode("utf-8", errors="replace"),
+            captured["stderr"].decode("utf-8", errors="replace"),
+        )
 
     def _python_ready(self, python_cmd: str) -> bool:
         """Check whether a Python interpreter can import runtime dependencies.
@@ -226,38 +345,37 @@ class Runner:
         console.print("[dim]Runner: starting backtest subprocess...[/dim]")
 
         effective_cwd = cwd or entry_script.parent
-        pythonpath_extra = cwd if cwd else None
-        env = self._build_runtime_env(run_dir, pythonpath_extra=pythonpath_extra)
-        python_cmd = self._pick_python_interpreter()
-        console.print(f"[dim]Runner: using Python: {python_cmd}[/dim]")
+        if self._execution_mode() == "dangerous-local":
+            pythonpath_extra = cwd if cwd else None
+            env = self._build_runtime_env(run_dir, pythonpath_extra=pythonpath_extra)
+            python_cmd = self._pick_python_interpreter()
+            console.print(f"[yellow]Runner: DANGEROUS local execution: {python_cmd}[/yellow]")
+            cmd = [python_cmd, str(entry_script), *(cli_args or [])]
+            process_cwd: Path | None = effective_cwd
+        else:
+            try:
+                cmd = self._container_command(entry_script, run_dir, cli_args)
+            except RuntimeError as exc:
+                return RunResult(False, 126, "", str(exc), {})
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "DOCKER_HOST": os.environ.get("DOCKER_HOST", ""),
+            }
+            process_cwd = None
+            console.print(f"[dim]Runner: using isolated container image {self._sandbox_image()}[/dim]")
 
-        cmd = [python_cmd, str(entry_script)]
-        if cli_args:
-            cmd.extend(cli_args)
-
-        process = subprocess.run(
-            cmd,
-            cwd=str(effective_cwd),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=self.timeout,
-            env=env,
-            encoding="utf-8",
-            errors="ignore",
-        )
+        exit_code, stdout, stderr = self._run_capped(cmd, cwd=process_cwd, env=env)
 
         elapsed = time.time() - start_time
         console.print(f"[blue]Runner: subprocess finished in {elapsed:.2f}s[/blue]")
 
-        stdout_path.write_text(process.stdout, encoding="utf-8")
-        stderr_path.write_text(process.stderr, encoding="utf-8")
+        stdout_path.write_text(stdout, encoding="utf-8")
+        stderr_path.write_text(stderr, encoding="utf-8")
 
-        if process.stdout:
-            console.print(f"[dim]Runner stdout:[/dim]\n{process.stdout}")
-        if process.stderr:
-            console.print(f"[red]Runner stderr:[/red]\n{process.stderr}")
+        if stdout:
+            console.print(f"[dim]Runner stdout:[/dim]\n{stdout}")
+        if stderr:
+            console.print(f"[red]Runner stderr:[/red]\n{stderr}")
 
         artifacts: dict[str, Path] = {}
         for name, info in self.artifact_entries.items():
@@ -268,11 +386,11 @@ class Runner:
             if target.exists():
                 artifacts[name] = target
 
-        success = process.returncode == 0
+        success = exit_code == 0
         return RunResult(
             success=success,
-            exit_code=process.returncode,
-            stdout=process.stdout,
-            stderr=process.stderr,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
             artifacts=artifacts,
         )

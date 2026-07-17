@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Play, Loader2, AlertTriangle, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, type MLTrainRequest, type MLTrainProgress, type MLTrainResult } from "@/lib/api";
+import { AuthenticatedEventStream } from "@/lib/fetchSSE";
 import { ContextTip, FormField, ErrorState } from "./shared";
 
 export function TrainView() {
@@ -33,17 +34,17 @@ export function TrainView() {
     try {
       const { job_id } = await api.startMLTrain(form);
       const url = api.mlTrainStreamUrl(job_id);
-      const source = new EventSource(url);
+      const source = new AuthenticatedEventStream(url);
 
       source.addEventListener("progress", (e) => {
         if (doneRef.current) return;
-        const data = JSON.parse(e.data) as MLTrainProgress;
+        const data = JSON.parse((e as MessageEvent).data) as MLTrainProgress;
         setProgress((prev) => [...prev, data]);
       });
 
       source.addEventListener("result", (e) => {
         doneRef.current = true;
-        const data = JSON.parse(e.data) as MLTrainResult;
+        const data = JSON.parse((e as MessageEvent).data) as MLTrainResult;
         setResult(data);
         setTraining(false);
         source.close();

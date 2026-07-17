@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { api, type AlphaBenchResult, type AlphaBenchTopRow } from "@/lib/api";
 import { echarts } from "@/lib/echarts";
 import { getChartTheme } from "@/lib/chart-theme";
+import { AuthenticatedEventStream } from "@/lib/fetchSSE";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { ZOO_CARDS, UNIVERSE_OPTIONS, fmtNum } from "./constants";
 
@@ -43,9 +44,8 @@ export function BenchView() {
   const [progress, setProgress] = useState<BenchProgress | null>(null);
   const [result, setResult] = useState<AlphaBenchResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const sourceRef = useRef<EventSource | null>(null);
-  // Track terminal `done` so the synthetic EventSource `error` fired on
-  // close doesn't surface as a spurious toast (race between done + error).
+  const sourceRef = useRef<AuthenticatedEventStream | null>(null);
+  // Track terminal `done` so stream closure does not surface as an error.
   const doneRef = useRef(false);
 
   useEffect(() => {
@@ -93,7 +93,7 @@ export function BenchView() {
   const attachStream = (newJobId: string) => {
     setStatus("streaming");
     const url = api.alphaBenchStreamUrl(newJobId);
-    const source = new EventSource(url);
+    const source = new AuthenticatedEventStream(url);
     sourceRef.current = source;
 
     source.addEventListener("progress", (e) => {
@@ -122,7 +122,7 @@ export function BenchView() {
     });
 
     source.addEventListener("error", (e) => {
-      // EventSource raises a synthetic error on every disconnect, including
+      // The stream transport reports every disconnect, including
       // the normal close that follows our `done` event. The ref check is
       // synchronous (state updates from `done` would be batched and not
       // visible here yet), so it's the only reliable race guard.
@@ -465,4 +465,3 @@ function CategoryBadge({ category }: { category: AlphaBenchTopRow["category"] })
     </span>
   );
 }
-

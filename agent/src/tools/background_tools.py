@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import threading
 import uuid
@@ -38,7 +39,10 @@ class BackgroundManager:
 
     def _execute(self, task_id: str, command: str) -> None:
         try:
-            r = subprocess.run(command, shell=True, cwd=WORKDIR,
+            argv = shlex.split(command)
+            if not argv:
+                raise ValueError("Command cannot be empty")
+            r = subprocess.run(argv, shell=False, cwd=WORKDIR,
                                capture_output=True, text=True, timeout=300,
                                encoding="utf-8", errors="replace")
             output = (r.stdout + r.stderr).strip()[:50000]
