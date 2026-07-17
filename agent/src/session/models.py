@@ -201,3 +201,9 @@ class Attempt:
         self.status = AttemptStatus.FAILED
         self.completed_at = datetime.now().isoformat()
         self.error = error
+
+    def mark_cancelled(self, reason: str = "cancelled") -> None:
+        """Mark the attempt terminal without accepting a late worker result."""
+        self.status = AttemptStatus.CANCELLED
+        self.completed_at = datetime.now().isoformat()
+        self.error = reason

@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool
-from src.security.scanner import with_security_warnings
+from src.security.untrusted import mark_untrusted_content
 from src.tools.path_utils import safe_document_path
 
 _MAX_CHARS = 15000
@@ -72,7 +72,11 @@ def _envelope(path: Path, fmt: str, text: str, **extra: Any) -> str:
         "text": body,
     }
     payload.update(extra)
-    payload = with_security_warnings(payload, fields=("text",))
+    payload = mark_untrusted_content(
+        payload,
+        fields=("text",),
+        source_kind="document",
+    )
     return json.dumps(payload, ensure_ascii=False)
 
 

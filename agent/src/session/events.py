@@ -11,10 +11,10 @@ import logging
 import threading
 import time
 import uuid
-
-logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -64,13 +64,22 @@ class EventBus:
         max_buffer_size: Maximum number of buffered events per session.
     """
 
-    def __init__(self, max_buffer_size: int = 500, event_store: Any = None) -> None:
+    def __init__(
+        self,
+        max_buffer_size: int = 500,
+        event_store: Any = None,
+        *,
+        max_replay_size: int = 10_000,
+    ) -> None:
         """Initialize the event bus.
 
         Args:
             max_buffer_size: Maximum number of buffered events per session.
         """
         self.max_buffer_size = max_buffer_size
+        if max_replay_size < 1:
+            raise ValueError("max_replay_size must be positive")
+        self.max_replay_size = max_replay_size
         self._buffers: Dict[str, List[SSEEvent]] = {}
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._lock = threading.Lock()
@@ -176,7 +185,10 @@ class EventBus:
             rows = self._event_store.get_events(
                 session_id,
                 after_event_id=last_event_id,
-                limit=self.max_buffer_size,
+                # Persistent replay is intentionally independent from the
+                # small live-memory buffer. This guarantees reconnect recovery
+                # for long runs while retaining an explicit resource bound.
+                limit=self.max_replay_size,
                 unknown_as_start=replay_all,
             )
             return [

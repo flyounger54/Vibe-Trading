@@ -93,7 +93,38 @@ CREATE INDEX IF NOT EXISTS idx_state_records_type_updated
     ON state_records(record_type, updated_at DESC);
 """
 
-_MIGRATIONS: tuple[tuple[int, str], ...] = ((1, _SCHEMA_V1),)
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS runtime_jobs (
+    job_id TEXT PRIMARY KEY,
+    queue_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    result_json TEXT,
+    idempotency_key TEXT,
+    concurrency_key TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    available_at REAL NOT NULL,
+    lease_owner TEXT,
+    lease_expires_at REAL,
+    heartbeat_at REAL,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    error_type TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(queue_name, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_jobs_claim
+    ON runtime_jobs(queue_name, status, available_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_jobs_concurrency
+    ON runtime_jobs(queue_name, concurrency_key, status, lease_expires_at);
+"""
+
+_MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (1, _SCHEMA_V1),
+    (2, _SCHEMA_V2),
+)
 _RECORD_TYPES = {"job", "swarm_run", "schedule"}
 
 

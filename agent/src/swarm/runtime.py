@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+import uuid
 from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
@@ -53,6 +55,7 @@ from src.swarm.task_store import (
 )
 from src.tools.redaction import redact_internal_paths
 from src.swarm.worker import run_worker
+from src.state.jobs import JobStatus, SQLiteJobQueue
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +64,8 @@ class SwarmRuntime:
     """Swarm DAG orchestration engine.
 
     Manages the full lifecycle of a swarm run: creation, scheduling, execution,
-    and cancellation. Each run executes in an independent background daemon thread;
-    tasks within a layer run in parallel via ThreadPoolExecutor.
+    and cancellation. The outer run is claimed from a durable queue; tasks
+    within a layer still run in parallel via ThreadPoolExecutor.
 
     Attributes:
         _store: SwarmStore persistence layer.
@@ -93,6 +96,18 @@ class SwarmRuntime:
         self._cancel_events: dict[str, threading.Event] = {}
         self._live_callbacks: dict[str, Callable] = {}
         self._lock = threading.Lock()
+        self._job_queue = SQLiteJobQueue(store.database)
+        self._queue_workers = max(1, min(max_workers, 2))
+        self._queue_executor = ThreadPoolExecutor(
+            max_workers=self._queue_workers,
+            thread_name_prefix="swarm-queue",
+        )
+        self._queue_futures: set[Future] = set()
+        self._queue_name = "swarm_runs"
+        self._queue_worker_prefix = f"swarm-{uuid.uuid4().hex[:12]}"
+        self._queue_lease_seconds = 60.0
+        self._active_job_leases: dict[str, tuple[str, str]] = {}
+        self.recover_pending_runs()
 
     def start_run(
         self,
@@ -147,13 +162,14 @@ class SwarmRuntime:
             if live_callback is not None:
                 self._live_callbacks[run.id] = live_callback
 
-        thread = threading.Thread(
-            target=self._execute_run,
-            args=(run, cancel_event, include_shell_tools),
-            name=f"swarm-{run.id}",
-            daemon=True,
+        self._job_queue.enqueue(
+            self._queue_name,
+            {"run_id": run.id, "include_shell_tools": include_shell_tools},
+            idempotency_key=run.id,
+            concurrency_key=run.id,
+            max_attempts=2,
         )
-        thread.start()
+        self._ensure_queue_workers()
 
         return run
 
@@ -166,12 +182,128 @@ class SwarmRuntime:
         Returns:
             True if cancellation was signalled, False if run not found.
         """
+        job = self._job_queue.active_for_concurrency(self._queue_name, run_id)
+        if job is None or not self._job_queue.cancel(job.job_id, reason="user_cancelled"):
+            return False
         with self._lock:
             cancel_event = self._cancel_events.get(run_id)
-        if cancel_event is None:
-            return False
-        cancel_event.set()
+        if cancel_event is not None:
+            cancel_event.set()
+        elif job.status == JobStatus.PENDING:
+            self._mark_run_cancelled(run_id, "user_cancelled")
         return True
+
+    def recover_pending_runs(self) -> None:
+        """Recover abandoned queue leases and resume durable run requests."""
+        self._job_queue.recover_expired(self._queue_name)
+        if self._job_queue.has_unfinished(self._queue_name):
+            self._ensure_queue_workers()
+
+    def shutdown(self) -> None:
+        """Release executor resources; active jobs recover through their leases."""
+        self._queue_executor.shutdown(wait=False, cancel_futures=True)
+
+    def _ensure_queue_workers(self) -> None:
+        with self._lock:
+            self._queue_futures = {
+                future for future in self._queue_futures if not future.done()
+            }
+            needed = self._queue_workers - len(self._queue_futures)
+            for index in range(needed):
+                worker_id = f"{self._queue_worker_prefix}-{index}-{uuid.uuid4().hex[:8]}"
+                future = self._queue_executor.submit(self._drain_queue, worker_id)
+                self._queue_futures.add(future)
+                future.add_done_callback(self._queue_futures.discard)
+
+    def _drain_queue(self, worker_id: str) -> None:
+        """Claim queued runs. The SQL lease is authoritative across restarts."""
+        while True:
+            job = self._job_queue.claim(
+                self._queue_name,
+                worker_id,
+                lease_seconds=self._queue_lease_seconds,
+            )
+            if job is None:
+                if not self._job_queue.has_unfinished(self._queue_name):
+                    return
+                time.sleep(0.2)
+                continue
+            run_id = str(job.payload.get("run_id", ""))
+            cancel_event = threading.Event()
+            with self._lock:
+                self._cancel_events[run_id] = cancel_event
+                self._active_job_leases[run_id] = (job.job_id, worker_id)
+            try:
+                run = self._store.load_run(run_id)
+                if run is None:
+                    self._job_queue.fail(
+                        job.job_id,
+                        worker_id,
+                        f"Swarm run {run_id} not found",
+                        error_type="missing_run",
+                    )
+                    continue
+                self._execute_run(
+                    run,
+                    cancel_event,
+                    include_shell_tools=bool(job.payload.get("include_shell_tools", False)),
+                )
+                if self._job_queue.complete(
+                    job.job_id,
+                    worker_id,
+                    {"run_id": run_id, "status": run.status.value},
+                ):
+                    continue
+                if self._job_queue.is_cancelled(job.job_id):
+                    self._mark_run_cancelled(run_id, "user_cancelled", force=True)
+                    self._job_queue.release_cancelled(job.job_id, worker_id)
+            except Exception as exc:  # noqa: BLE001 - persist an explicit retry/failure state
+                logger.exception("Queued swarm run %s crashed", run_id)
+                status = self._job_queue.fail(
+                    job.job_id,
+                    worker_id,
+                    redact_internal_paths(str(exc)),
+                    error_type="swarm_runtime_error",
+                    retry_delay=1,
+                )
+                if status == JobStatus.FAILED:
+                    self._mark_run_failed(run_id, redact_internal_paths(str(exc)))
+            finally:
+                with self._lock:
+                    self._cancel_events.pop(run_id, None)
+                    self._active_job_leases.pop(run_id, None)
+
+    def _mark_run_cancelled(self, run_id: str, reason: str, *, force: bool = False) -> None:
+        """Make durable cancellation visible even when no worker was claimed."""
+        run = self._store.load_run(run_id)
+        if run is None or run.status in {RunStatus.failed, RunStatus.cancelled}:
+            return
+        if run.status == RunStatus.completed and not force:
+            return
+        run.status = RunStatus.cancelled
+        run.completed_at = datetime.now(timezone.utc).isoformat()
+        run_dir = self._store.run_dir(run_id)
+        task_store = TaskStore(run_dir)
+        for task in task_store.load_all():
+            if task.status in {TaskStatus.pending, TaskStatus.in_progress, TaskStatus.blocked}:
+                task_store.update_status(
+                    task.id,
+                    TaskStatus.cancelled,
+                    error=reason,
+                    completed_at=run.completed_at,
+                )
+        run.tasks = task_store.load_all() or run.tasks
+        self._store.update_run(run)
+        self._emit_event(run_id, self._make_event("run_cancelled", data={"reason": reason}))
+
+    def _mark_run_failed(self, run_id: str, error: str) -> None:
+        run = self._store.load_run(run_id)
+        if run is None or run.status in {RunStatus.completed, RunStatus.failed, RunStatus.cancelled}:
+            return
+        run.status = RunStatus.failed
+        run.completed_at = datetime.now(timezone.utc).isoformat()
+        self._store.update_run(run)
+        self._emit_event(run_id, self._make_event("run_error", data={"error": error}))
 
     def _emit_event(self, run_id: str, event: SwarmEvent) -> None:
         """Persist an event and forward to live callback if registered.
@@ -186,6 +318,17 @@ class SwarmRuntime:
             logger.warning("Failed to persist event for run %s", run_id, exc_info=True)
         with self._lock:
             cb = self._live_callbacks.get(run_id)
+            lease = self._active_job_leases.get(run_id)
+        if lease is not None:
+            job_id, worker_id = lease
+            # Every persisted run event doubles as a durable worker heartbeat.
+            # Workers emit progress heartbeats while tools are running, so this
+            # keeps the queue lease alive without a second execution thread.
+            self._job_queue.heartbeat(
+                job_id,
+                worker_id,
+                lease_seconds=self._queue_lease_seconds,
+            )
         if cb is not None:
             try:
                 cb(event)
@@ -1042,9 +1185,7 @@ class SwarmRuntime:
                 ),
             )
             try:
-                resolutions = run_debate_round(
-                    cv_result, upstream_summaries, llm=llm,
-                )
+                resolutions = run_debate_round(cv_result, upstream_summaries)
             except Exception:
                 logger.warning(
                     "Debate round failed for task %s", task_id, exc_info=True,

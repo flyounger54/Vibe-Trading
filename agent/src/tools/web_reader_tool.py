@@ -11,7 +11,7 @@ import requests
 
 from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool
-from src.security.scanner import with_security_warnings
+from src.security.untrusted import mark_untrusted_content
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,11 @@ def read_url(url: str, no_cache: bool = False) -> str:
         }
         if _CACHED_MARKER in resp.text:
             result["cached"] = True
-        result = with_security_warnings(result, fields=("content",))
+        result = mark_untrusted_content(
+            result,
+            fields=("content",),
+            source_kind="web_page",
+        )
         return json.dumps(result, ensure_ascii=False)
 
     except requests.Timeout:

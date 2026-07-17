@@ -129,6 +129,65 @@ class SessionStore:
                 ),
             )
 
+    def ensure_queued_attempt(
+        self,
+        message: Message,
+        attempt: Attempt,
+        *,
+        include_shell_tools: bool,
+    ) -> tuple[bool, bool]:
+        """Atomically materialize records described by a durable queue job.
+
+        ``INSERT OR IGNORE`` makes this safe both immediately after enqueue and
+        during process-restart recovery. The newest attempt remains the
+        Session's head, so replaying an older job cannot move it backwards.
+        """
+        with self.database.transaction() as connection:
+            session_row = connection.execute(
+                "SELECT * FROM sessions WHERE session_id=?", (message.session_id,)
+            ).fetchone()
+            if session_row is None:
+                raise ValueError(f"Session {message.session_id} not found")
+            message_cursor = connection.execute(
+                "INSERT OR IGNORE INTO messages(message_id, session_id, role, content, created_at, "
+                "linked_attempt_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    message.message_id,
+                    message.session_id,
+                    message.role,
+                    message.content,
+                    message.created_at,
+                    message.linked_attempt_id,
+                    _json(message.metadata),
+                ),
+            )
+            attempt_cursor = connection.execute(
+                "INSERT OR IGNORE INTO attempts(attempt_id, session_id, parent_attempt_id, status, "
+                "prompt, run_dir, summary, react_trace_json, created_at, completed_at, error, "
+                "metrics_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                _attempt_values(attempt),
+            )
+            config = json.loads(session_row["config_json"])
+            config["include_shell_tools"] = include_shell_tools
+            current_head = session_row["last_attempt_id"]
+            current_created = None
+            if current_head:
+                head_row = connection.execute(
+                    "SELECT created_at FROM attempts WHERE attempt_id=?", (current_head,)
+                ).fetchone()
+                current_created = head_row["created_at"] if head_row is not None else None
+            next_head = (
+                attempt.attempt_id
+                if current_created is None or attempt.created_at >= current_created
+                else current_head
+            )
+            connection.execute(
+                "UPDATE sessions SET last_attempt_id=?, config_json=?, updated_at=?, "
+                "row_version=row_version+1 WHERE session_id=?",
+                (next_head, _json(config), max(session_row["updated_at"], attempt.created_at), message.session_id),
+            )
+        return message_cursor.rowcount == 1, attempt_cursor.rowcount == 1
+
     def get_messages(self, session_id: str, limit: int = 100) -> List[Message]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -181,6 +240,33 @@ class SessionStore:
             )
         if cursor.rowcount == 0:
             raise ValueError(f"Attempt {attempt.attempt_id} not found")
+
+    def finalize_attempt(self, attempt: Attempt, reply: Message | None = None) -> None:
+        """Atomically persist a terminal attempt and its deterministic reply."""
+        values = _attempt_values(attempt)
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE attempts SET session_id=?, parent_attempt_id=?, status=?, prompt=?, "
+                "run_dir=?, summary=?, react_trace_json=?, created_at=?, completed_at=?, error=?, "
+                "metrics_json=?, row_version=row_version+1 WHERE attempt_id=?",
+                values[1:] + (values[0],),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Attempt {attempt.attempt_id} not found")
+            if reply is not None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO messages(message_id, session_id, role, content, created_at, "
+                    "linked_attempt_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        reply.message_id,
+                        reply.session_id,
+                        reply.role,
+                        reply.content,
+                        reply.created_at,
+                        reply.linked_attempt_id,
+                        _json(reply.metadata),
+                    ),
+                )
 
     # ---- Persistent event cursor ----
 

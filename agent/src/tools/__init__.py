@@ -71,6 +71,7 @@ def build_registry(
     session_id: str | None = None,
     event_callback: Callable[[str, dict], None] | None = None,
     warn_callback: Callable[[str], None] | None = None,
+    tool_permission_check: Callable[[str, dict], bool | tuple[bool, str]] | None = None,
     interactive: bool | None = None,
     _mcp_server_tool_name_segments: Mapping[str, str] | None = None,
 ) -> ToolRegistry:
@@ -132,7 +133,7 @@ def build_registry(
     # Tools that need the host session id injected: they create or mutate the
     # session's research goal, and the LLM never knows the session id.
     session_injected_classes = goal_tool_classes | {RunResearchAutopilotTool}
-    registry = ToolRegistry()
+    registry = ToolRegistry(permission_check=tool_permission_check)
     for cls in _discover_subclasses():
         try:
             if cls.name in _SHELL_TOOL_NAMES and not include_shell_tools:

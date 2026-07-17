@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +107,19 @@ class BaseTool(ABC):
         }
 
 
+ToolPermissionCheck = Callable[[str, Dict[str, Any]], bool | tuple[bool, str]]
+
+
 class ToolRegistry:
     """Tool registry."""
 
-    def __init__(self) -> None:
+    def __init__(self, permission_check: ToolPermissionCheck | None = None) -> None:
         self._tools: Dict[str, BaseTool] = {}
+        self._permission_check = permission_check
+
+    def set_permission_check(self, check: ToolPermissionCheck | None) -> None:
+        """Set the host-owned policy evaluated immediately before every tool call."""
+        self._permission_check = check
 
     def register(self, tool: BaseTool) -> None:
         """Register a tool."""
@@ -130,6 +138,21 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if not tool:
             return json.dumps({"status": "error", "error": f"Tool '{name}' not found"}, ensure_ascii=False)
+        if self._permission_check is not None:
+            decision = self._permission_check(name, params)
+            allowed, reason = (
+                decision if isinstance(decision, tuple) else (decision, "host policy denied tool call")
+            )
+            if not allowed:
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "tool": name,
+                        "error_code": "tool_permission_denied",
+                        "error": reason,
+                    },
+                    ensure_ascii=False,
+                )
         try:
             return tool.execute(**params)
         except Exception as exc:

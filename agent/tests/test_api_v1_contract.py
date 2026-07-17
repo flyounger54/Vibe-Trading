@@ -74,6 +74,44 @@ def test_v1_validation_error_has_actionable_details(monkeypatch, tmp_path: Path)
         api_server.app.dependency_overrides.clear()
 
 
+def test_session_message_idempotency_is_durable_for_legacy_and_v1_routes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _client(monkeypatch, tmp_path)
+
+    async def run_agent(*args, **kwargs):
+        del args, kwargs
+        return {"status": "success", "content": "queued"}
+
+    api_server._session_service._run_with_agent = run_agent
+    try:
+        for prefix in ("/sessions", "/api/v1/sessions"):
+            created = client.post(prefix, json={"title": "idempotent"})
+            assert created.status_code in {200, 201}
+            session_id = created.json()["session_id"]
+            headers = {"Idempotency-Key": f"message-key-{session_id}"}
+            first = client.post(
+                f"{prefix}/{session_id}/messages",
+                headers=headers,
+                json={"content": "research NVDA"},
+            )
+            duplicate = client.post(
+                f"{prefix}/{session_id}/messages",
+                headers=headers,
+                json={"content": "replace this"},
+            )
+
+            assert first.status_code == duplicate.status_code == 200
+            assert duplicate.json() == first.json()
+            messages = api_server._session_service.get_messages(session_id)
+            assert [message.content for message in messages if message.role == "user"] == [
+                "research NVDA"
+            ]
+    finally:
+        api_server.app.dependency_overrides.clear()
+
+
 def test_generated_openapi_contains_legacy_and_v1_paths() -> None:
     schema = api_server.app.openapi()
 

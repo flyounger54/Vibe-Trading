@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading as _threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -338,8 +339,6 @@ class SessionSearchIndex:
             self._conn.close()
             self._conn = None
 
-
-import threading as _threading
 
 _shared_index: Optional[SessionSearchIndex] = None
 _shared_lock = _threading.Lock()

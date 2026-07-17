@@ -30,8 +30,8 @@ def test_database_enables_wal_and_applies_schema_once(tmp_path: Path) -> None:
     second = StateDatabase(tmp_path / "state.db")
 
     assert database.journal_mode() == "wal"
-    assert database.schema_version() == 1
-    assert second.schema_version() == 1
+    assert database.schema_version() == 2
+    assert second.schema_version() == 2
 
 
 @pytest.mark.parametrize("record_type", ["job", "swarm_run", "schedule"])

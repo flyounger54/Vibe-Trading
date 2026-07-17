@@ -10,6 +10,7 @@ from src.agent.tools import BaseTool
 from src.tools.path_utils import safe_path as _safe_path
 from src.tools.path_utils import safe_run_dir as _safe_run_dir
 from src.tools.redaction import redact_internal_paths
+from src.security.untrusted import mark_untrusted_content
 
 _OUTPUT_LIMIT = 50_000
 
@@ -93,14 +94,20 @@ class ReadFileTool(BaseTool):
                 text = "".join(lines[:limit])
             if len(text) > _OUTPUT_LIMIT:
                 text = text[:_OUTPUT_LIMIT] + "\n... (truncated)"
-            return json.dumps(
-                {
-                    "status": "ok",
-                    "path": str(resolved),
-                    "content": text,
-                },
-                ensure_ascii=False,
-            )
+            payload = {
+                "status": "ok",
+                "path": str(resolved),
+                "content": text,
+            }
+            # Bundled skills are operator-controlled instructions. Everything
+            # else read from a run workspace is treated as untrusted data.
+            if not any(resolved.is_relative_to(root) for root in [skills_dir.resolve()]):
+                payload = mark_untrusted_content(
+                    payload,
+                    fields=("content",),
+                    source_kind="workspace_document",
+                )
+            return json.dumps(payload, ensure_ascii=False)
         except Exception as exc:
             return json.dumps(
                 {

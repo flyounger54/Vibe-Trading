@@ -671,12 +671,19 @@ async def _run_startup_preflight() -> None:
     _configured_api_key()
     run_preflight(console)
     _start_scheduled_research_executor()
+    session_service = _get_session_service()
+    if session_service is not None:
+        session_service.start()
 
 
 @app.on_event("shutdown")
 async def _stop_scheduled_research_on_shutdown() -> None:
     """Stop the scheduled research executor on server shutdown."""
     await _stop_scheduled_research_executor()
+    if _session_service is not None:
+        await _session_service.shutdown()
+    if _swarm_runtime is not None:
+        _swarm_runtime.shutdown()
 
 
 # ============================================================================
@@ -1022,7 +1029,13 @@ async def _unified_api_security_boundary(request: Request, call_next):
 
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             raw_idempotency_key = request.headers.get("Idempotency-Key", "").strip()
-            if raw_idempotency_key:
+            # Session messages have a durable idempotency record in the
+            # runtime queue. Let that layer replay the original response even
+            # across a process restart instead of returning an in-memory 409.
+            durable_session_message = bool(
+                re.fullmatch(r"(?:/api/v1)?/sessions/[^/]+/messages", request.url.path)
+            )
+            if raw_idempotency_key and not durable_session_message:
                 idempotency_scope = f"{request.method}:{request.url.path}"
                 idempotency_claim = f"{idempotency_scope}:{raw_idempotency_key}"
                 try:
@@ -2082,6 +2095,7 @@ async def send_message(session_id: str, payload: SendMessageRequest, http_reques
             session_id=session_id,
             content=payload.content,
             include_shell_tools=_shell_tools_enabled_for_request(http_request),
+            idempotency_key=http_request.headers.get("Idempotency-Key"),
         )
         return result
     except ValueError as exc:

@@ -18,7 +18,7 @@ import time
 from typing import Any
 
 from src.agent.tools import BaseTool
-from src.security.scanner import with_security_warnings
+from src.security.untrusted import mark_untrusted_content
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +145,10 @@ class WebSearchTool(BaseTool):
                 "backends": backends if supports_backend else "duckduckgo",
                 "results": results,
             }
-            payload = with_security_warnings(
+            payload = mark_untrusted_content(
                 payload,
                 fields=("results.*.title", "results.*.snippet"),
+                source_kind="web_search",
             )
             return json.dumps(payload, ensure_ascii=False)
 

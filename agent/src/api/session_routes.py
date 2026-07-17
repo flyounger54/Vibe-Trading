@@ -104,6 +104,7 @@ def register_session_routes(
                 session_id=session_id,
                 content=payload.content,
                 include_shell_tools=shell_tools_enabled(request),
+                idempotency_key=request.headers.get("Idempotency-Key"),
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
