@@ -1883,6 +1883,81 @@ def scan_shadow_signals(
 
 
 # ---------------------------------------------------------------------------
+# Industry Chain dashboard tool
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def get_industry_chain(
+    mode: str = "list",
+    chain_id: str = "",
+    chain_name: str = "",
+) -> str:
+    """Query the industry-chain research dashboard.
+
+    mode='list': list all chains (names, statuses, lifecycle stages).
+    mode='detail': return full chain + segments + chokepoint scores.
+    mode='score': return per-segment chokepoint scores for a chain.
+
+    Research-only: reads persisted dashboard state, does not trigger analysis.
+
+    Args:
+        mode: 'list', 'detail', or 'score'.
+        chain_id: Chain identifier (required for detail/score modes).
+        chain_name: Alternative to chain_id — search by name.
+    """
+    import json as _json
+
+    from src.industry_chain.store import IndustryChainStore
+
+    store = IndustryChainStore()
+
+    if mode == "list":
+        chains = store.list_chains()
+        return _json.dumps(
+            {"chains": [c.summary() for c in chains]},
+            ensure_ascii=False,
+        )
+
+    target_id = chain_id
+    if not target_id and chain_name:
+        for c in store.list_chains():
+            if chain_name.lower() in c.name.lower():
+                target_id = c.chain_id
+                break
+
+    if not target_id:
+        return _json.dumps({"error": "Provide chain_id or chain_name"})
+
+    chain = store.get_chain(target_id)
+    if chain is None:
+        return _json.dumps({"error": f"Chain {target_id} not found"})
+
+    if mode == "score":
+        scores = {}
+        for s in chain.segments:
+            scores[s.name] = {
+                "chokepoint_total": s.chokepoint_total,
+                "barrier_type": s.barrier_type,
+                "tickers": [
+                    {"code": t.code, "name": t.name, "score": t.score, "tier": t.tier}
+                    for t in s.tickers
+                ],
+            }
+        return _json.dumps(
+            {
+                "chain": chain.name,
+                "lifecycle_stage": chain.overview.lifecycle_stage,
+                "prosperity_score": chain.overview.prosperity_score,
+                "segments": scores,
+            },
+            ensure_ascii=False,
+        )
+
+    return _json.dumps(chain.to_dict(), ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

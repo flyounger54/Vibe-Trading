@@ -8,6 +8,7 @@ interface AgentState {
   messages: AgentMessage[];
   sessionId: string | null;
   status: "idle" | "streaming" | "error";
+  errorMessage: string | null;
   streamingText: string;
 
   /** The session currently streaming on the backend. Survives switchSession
@@ -22,6 +23,7 @@ interface AgentState {
   addMessage: (msg: Omit<AgentMessage, "id"> & { id?: string }) => void;
   appendDelta: (delta: string) => void;
   setStatus: (s: AgentState["status"]) => void;
+  setError: (msg: string | null) => void;
   setSessionId: (id: string | null) => void;
   loadHistory: (msgs: AgentMessage[]) => void;
 
@@ -51,6 +53,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   messages: [],
   sessionId: null,
   status: "idle",
+  errorMessage: null,
   streamingText: "",
   streamingSessionId: null,
   toolCalls: [],
@@ -67,6 +70,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   setStatus: (status) =>
     set((s) => {
       const patch: Partial<AgentState> = { status };
+      if (status === "idle") patch.errorMessage = null;
       if (status === "streaming" && s.sessionId) {
         patch.streamingSessionId = s.sessionId;
       } else if (status !== "streaming" && s.streamingSessionId === s.sessionId) {
@@ -74,6 +78,7 @@ export const useAgentStore = create<AgentState>((set) => ({
       }
       return patch;
     }),
+  setError: (errorMessage) => set({ errorMessage }),
   setSessionId: (sessionId) => set({ sessionId }),
   loadHistory: (msgs) => set({ messages: msgs }),
 
@@ -150,7 +155,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   reset: () => {
     _id = 0;
     set({
-      messages: [], status: "idle", streamingText: "",
+      messages: [], status: "idle", errorMessage: null, streamingText: "",
       sessionId: null, toolCalls: [], sessionLoading: false,
       streamingSessionId: null,
     });

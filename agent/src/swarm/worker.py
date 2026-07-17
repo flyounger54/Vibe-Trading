@@ -192,14 +192,37 @@ def build_worker_prompt(
         Complete system prompt string for the worker LLM.
     """
     upstream_block = ""
+    cv_block = ""
     if upstream_summaries:
+        quality_summary = upstream_summaries.get("_quality_summary", "")
+        quality_feedback = upstream_summaries.get("_quality_feedback", "")
+        cv_block = upstream_summaries.get("_cross_validation", "")
+        past_ctx = upstream_summaries.get("_past_context", "")
+
         sections = []
         for key, summary in upstream_summaries.items():
+            if key.startswith("_"):
+                continue
             sections.append(f"### {key}\n{summary}")
-        upstream_block = (
+
+        parts = []
+        if cv_block:
+            parts.append(cv_block)
+        if quality_summary:
+            parts.append(quality_summary)
+        parts.append(
             "## Upstream Context (from previous agents)\n\n"
             + "\n\n".join(sections)
         )
+        if past_ctx:
+            parts.append(past_ctx)
+        upstream_block = "\n\n".join(parts)
+
+        if quality_feedback:
+            upstream_block = (
+                f"## Quality Improvement Required\n\n{quality_feedback}\n\n"
+                + upstream_block
+            )
 
     prompt_parts = [
         f"## Role\n\n{agent_spec.role}",
@@ -257,6 +280,10 @@ def build_worker_prompt(
         "do NOT introduce one from training data — say the upstream omitted "
         "it and proceed without."
     )
+
+    if cv_block:
+        from src.swarm.cross_validation import get_processing_rules
+        prompt_parts.append(get_processing_rules())
 
     prompt_parts.append(
         "## Execution Rules\n\n"

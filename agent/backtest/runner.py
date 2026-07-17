@@ -297,14 +297,14 @@ def _validate_signal_engine_class(engine_cls) -> None:
 
 # Back-compat: market type -> legacy source name (for engine selection & metrics)
 _MARKET_TO_SOURCE = {
-    "a_share": "tushare",
-    "us_equity": "yfinance",
-    "hk_equity": "yfinance",
+    "a_share": "astock",
+    "us_equity": "global",
+    "hk_equity": "global",
     "crypto": "okx",
     "futures": "tushare",
     "fund": "tushare",
-    "macro": "akshare",
-    "forex": "akshare",
+    "macro": "tushare",
+    "forex": "local",
 }
 
 
@@ -574,14 +574,14 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
     if source in ("okx", "ccxt"):
         from backtest.engines.crypto import CryptoEngine
         return CryptoEngine(config)
-    elif source in ("tushare", "akshare"):
+    elif source in ("astock", "tushare"):
         if markets & {"us_equity", "hk_equity"}:
             from backtest.engines.global_equity import GlobalEquityEngine
             market = _detect_submarket(codes)
             return GlobalEquityEngine(config, market=market)
         from backtest.engines.china_a import ChinaAEngine
         return ChinaAEngine(config)
-    elif source == "yfinance":
+    elif source == "global":
         from backtest.engines.global_equity import GlobalEquityEngine
         market = _detect_submarket(codes)
         return GlobalEquityEngine(config, market=market)

@@ -1,0 +1,3 @@
+# Frozen node 0 frontend baseline. Node 1 must update the stale assertion and remove this entry.
+src/components/chat/__tests__/WelcomeScreen.test.tsx > WelcomeScreen > renders capability chips
+

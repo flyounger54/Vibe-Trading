@@ -149,11 +149,10 @@ def compute_correlation_matrix(
         try:
             loader = resolve_loader(market)
         except Exception:
-            # Fall back to yfinance for us_equity / hk_equity
             try:
                 from backtest.loaders.registry import LOADER_REGISTRY
-                if "yfinance" in LOADER_REGISTRY:
-                    loader = LOADER_REGISTRY["yfinance"]()
+                if "global" in LOADER_REGISTRY:
+                    loader = LOADER_REGISTRY["global"]()
                 else:
                     continue
             except Exception:

@@ -119,7 +119,7 @@ def _infer_market(codes: list[str], source: str) -> str:
         return "us_equity"
     if first.endswith(".HK"):
         return "hk_equity"
-    if source in ("tushare", "akshare"):
+    if source in ("astock", "tushare"):
         if first.isdigit() and len(first) == 6:
             return "a_share"
         if first.startswith(("IF", "IC", "IH", "IM", "T", "TF")):

@@ -307,7 +307,7 @@ def test_runtime_threads_grounding_block_into_layer_workers(tmp_path, monkeypatc
         seen.append(kwargs["grounding_block"])
         return WorkerResult(status="completed", summary="done")
 
-    monkeypatch.setattr(runtime, "_run_worker_with_retries", _fake_worker)
+    monkeypatch.setattr(runtime, "_run_and_quality_check", _fake_worker)
 
     results = runtime._execute_layer(
         run=run,
@@ -315,6 +315,7 @@ def test_runtime_threads_grounding_block_into_layer_workers(tmp_path, monkeypatc
         agent_map={agent.id: agent},
         layer_task_ids=[task.id],
         task_summaries={},
+        task_quality={},
         run_dir=run_dir,
         cancel_event=threading.Event(),
         grounding_block="GROUNDING",

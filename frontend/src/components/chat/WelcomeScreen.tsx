@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
-﻿import { Bot, TrendingUp, Globe, Sparkles, Users, UserCircle2, NotebookPen, Landmark } from "lucide-react";
+import { useState as useLocalState } from "react";
+import { Bot, BookOpen, TrendingUp, Globe, Sparkles, Users, UserCircle2, NotebookPen, Landmark, ChevronRight } from "lucide-react";
 
 interface Example {
   title: string;
@@ -11,6 +12,7 @@ interface Category {
   label: string;
   icon: React.ReactNode;
   color: string;
+  cardColor: string;
   examples: Example[];
 }
 
@@ -18,7 +20,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Multi-Market Backtest",
     icon: <TrendingUp className="h-4 w-4" />,
-    color: "text-red-400 border-red-500/30 hover:border-red-500/60 hover:bg-red-500/5",
+    color: "text-red-400",
+    cardColor: "border-red-500/30 hover:border-red-500/60 hover:bg-red-500/5",
     examples: [
       {
         title: "Cross-Market Portfolio",
@@ -40,7 +43,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Research & Analysis",
     icon: <Sparkles className="h-4 w-4" />,
-    color: "text-amber-400 border-amber-500/30 hover:border-amber-500/60 hover:bg-amber-500/5",
+    color: "text-amber-400",
+    cardColor: "border-amber-500/30 hover:border-amber-500/60 hover:bg-amber-500/5",
     examples: [
       {
         title: "Multi-Factor Alpha Model",
@@ -57,7 +61,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Swarm Teams",
     icon: <Users className="h-4 w-4" />,
-    color: "text-violet-400 border-violet-500/30 hover:border-violet-500/60 hover:bg-violet-500/5",
+    color: "text-violet-400",
+    cardColor: "border-violet-500/30 hover:border-violet-500/60 hover:bg-violet-500/5",
     examples: [
       {
         title: "Investment Committee Review",
@@ -74,7 +79,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Document & Web Research",
     icon: <Globe className="h-4 w-4" />,
-    color: "text-blue-400 border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/5",
+    color: "text-blue-400",
+    cardColor: "border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/5",
     examples: [
       {
         title: "Analyze an Earnings Report PDF",
@@ -91,7 +97,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Trade Journal",
     icon: <NotebookPen className="h-4 w-4" />,
-    color: "text-orange-400 border-orange-500/30 hover:border-orange-500/60 hover:bg-orange-500/5",
+    color: "text-orange-400",
+    cardColor: "border-orange-500/30 hover:border-orange-500/60 hover:bg-orange-500/5",
     examples: [
       {
         title: "Analyze My Broker Export",
@@ -108,7 +115,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Trading Connectors",
     icon: <Landmark className="h-4 w-4" />,
-    color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500/60 hover:bg-cyan-500/5",
+    color: "text-cyan-400",
+    cardColor: "border-cyan-500/30 hover:border-cyan-500/60 hover:bg-cyan-500/5",
     examples: [
       {
         title: "Check Selected Connector",
@@ -130,7 +138,8 @@ const CATEGORIES: Category[] = [
   {
     label: "Shadow Account",
     icon: <UserCircle2 className="h-4 w-4" />,
-    color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500/60 hover:bg-emerald-500/5",
+    color: "text-emerald-400",
+    cardColor: "border-emerald-500/30 hover:border-emerald-500/60 hover:bg-emerald-500/5",
     examples: [
       {
         title: "Train My Shadow from Journal",
@@ -171,68 +180,93 @@ const CAPABILITY_CHIPS = [
 
 interface Props {
   onExample: (s: string) => void;
+  onOpenSwarmGuide?: () => void;
 }
 
-export function WelcomeScreen({ onExample }: Props) {
+export function WelcomeScreen({ onExample, onOpenSwarmGuide }: Props) {
   const { t } = useTranslation();
+  const [chipsOpen, setChipsOpen] = useLocalState(false);
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8 text-center">
-      {/* Header */}
-      <div className="space-y-3">
-        <div className="h-16 w-16 mx-auto rounded-2xl bg-gradient-to-br from-primary/80 to-info/80 flex items-center justify-center shadow-lg">
-          <Bot className="h-8 w-8 text-white" />
+    <div className="flex flex-col space-y-3 py-2">
+      {/* Compact header with collapsible capability chips */}
+      <div className="flex items-center gap-3">
+        <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-primary/80 to-info/80 flex items-center justify-center shadow shrink-0">
+          <Bot className="h-5 w-5 text-white" />
         </div>
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">{t('welcome.title')}</h2>
-          <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto leading-relaxed">
-            vibe trading with your professional financial agent team
-          </p>
-          <p className="text-sm text-muted-foreground mt-2 max-w-md leading-relaxed mx-auto">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold tracking-tight leading-tight">{t('welcome.title')}</h2>
+          <p className="text-xs text-muted-foreground leading-snug">
             Describe a trading strategy to get started.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setChipsOpen((o) => !o)}
+          className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        >
+          <ChevronRight className={`h-3 w-3 transition-transform ${chipsOpen ? "rotate-90" : ""}`} />
+          {CAPABILITY_CHIPS.length} capabilities
+        </button>
       </div>
 
-      {/* Capability chips */}
-      <div className="flex flex-wrap justify-center gap-2 max-w-lg">
-        {CAPABILITY_CHIPS.map((chip) => (
-          <span
-            key={chip}
-            className="px-2.5 py-1 text-xs rounded-full border border-border/60 text-muted-foreground bg-muted/30"
-          >
-            {chip}
-          </span>
-        ))}
-      </div>
-
-      {/* Example categories grid */}
-      <div className="w-full max-w-2xl text-left space-y-4">
-        <p className="text-xs text-muted-foreground px-1">{t('welcome.tryExample')}</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {CATEGORIES.map((cat) => (
-            <div key={cat.label} className="space-y-2">
-              <div className={`flex items-center gap-1.5 text-xs font-medium px-1 ${cat.color.split(" ").filter(c => c.startsWith("text-")).join(" ")}`}>
-                {cat.icon}
-                <span>{cat.label}</span>
-              </div>
-              <div className="space-y-1.5">
-                {cat.examples.map((ex) => (
-                  <button
-                    key={ex.title}
-                    onClick={() => onExample(ex.prompt)}
-                    className={`block w-full text-left px-3 py-2.5 rounded-xl border transition-colors ${cat.color}`}
-                  >
-                    <span className="text-sm font-medium text-foreground leading-snug">
-                      {ex.title}
-                    </span>
-                    <span className="block text-xs text-muted-foreground mt-0.5 leading-snug">
-                      {ex.desc}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+      {chipsOpen && (
+        <div className="flex flex-wrap gap-1.5">
+          {CAPABILITY_CHIPS.map((chip) => (
+            <span
+              key={chip}
+              className="px-2 py-0.5 text-[10px] rounded-full border border-border/40 text-muted-foreground/70"
+            >
+              {chip}
+            </span>
           ))}
+        </div>
+      )}
+
+      {/* Example categories — dense grid layout */}
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">{t('welcome.tryExample')}</p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-3">
+          {CATEGORIES.map((cat) => {
+            const isWide = cat.examples.length === 3;
+            return (
+              <div
+                key={cat.label}
+                className={`flex flex-col ${isWide ? "sm:col-span-2" : ""}`}
+              >
+                <div className={`flex items-center gap-1.5 text-xs font-medium mb-1.5 ${cat.color}`}>
+                  {cat.icon}
+                  <span>{cat.label}</span>
+                  {cat.label === "Swarm Teams" && onOpenSwarmGuide && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); onOpenSwarmGuide(); }}
+                      className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground hover:text-violet-500 transition-colors"
+                    >
+                      <BookOpen className="h-3 w-3" />
+                      View all 33 presets →
+                    </button>
+                  )}
+                </div>
+                <div className={`grid flex-1 gap-1.5 ${isWide ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
+                  {cat.examples.map((ex) => (
+                    <button
+                      key={ex.title}
+                      onClick={() => onExample(ex.prompt)}
+                      className={`flex flex-col items-start w-full text-left px-3 py-2 rounded-lg border transition-colors ${cat.cardColor}`}
+                    >
+                      <span className="text-sm font-medium text-foreground leading-snug">
+                        {ex.title}
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                        {ex.desc}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

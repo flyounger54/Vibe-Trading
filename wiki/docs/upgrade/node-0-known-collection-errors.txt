@@ -1,0 +1,20 @@
+# Frozen node 0 baseline. Node 1 must remove these entries as compatibility aliases/tests are repaired.
+agent/tests/test_akshare_loader.py
+agent/tests/test_alphavantage_loader.py
+agent/tests/test_baostock_loader.py
+agent/tests/test_eastmoney_loader.py
+agent/tests/test_finnhub_loader.py
+agent/tests/test_fmp_loader.py
+agent/tests/test_futu_loader.py
+agent/tests/test_mootdx_loader.py
+agent/tests/test_options_chain_tool.py
+agent/tests/test_sina_loader.py
+agent/tests/test_stock_news_tool.py
+agent/tests/test_stock_profile_tool.py
+agent/tests/test_stooq_loader.py
+agent/tests/test_symbol_search_tool.py
+agent/tests/test_tiingo_loader.py
+agent/tests/test_yahoo_client.py
+agent/tests/test_yahoo_loader.py
+agent/tests/test_yfinance_crypto.py
+

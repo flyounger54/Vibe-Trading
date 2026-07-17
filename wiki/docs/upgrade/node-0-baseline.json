@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-16T23:13:41+08:00",
+  "repository": "/Users/flyounger54/Desktop/quant-system/Vibe-Trading",
+  "branch": "upgrade/node-0-reproducible-baseline",
+  "baseline_head": "eea2124dff183771ddb2df75c4b61a8e2fd26b19",
+  "runtime": {
+    "python": {
+      "supported": ["3.11", "3.12"],
+      "validated": ["3.11.13", "3.12.11"],
+      "lock_file": "requirements.lock",
+      "pip_check": "pass"
+    },
+    "node": {
+      "version": "20.20.2",
+      "npm": "10.8.2",
+      "version_file": ".nvmrc"
+    }
+  },
+  "doctor": {
+    "passed": 13,
+    "warned": 3,
+    "failed": 0,
+    "warnings": [
+      "optional runtime dependencies are not installed in the core baseline",
+      "TUSHARE_TOKEN is not configured",
+      "local Data Bridge config is not configured"
+    ]
+  },
+  "backend": {
+    "focused_tests": {
+      "passed": 8,
+      "failed": 0,
+      "duration_seconds": 3.86
+    },
+    "collection": {
+      "collected": 4211,
+      "known_errors": 18,
+      "duration_seconds": 8.57,
+      "baseline_file": "wiki/docs/upgrade/node-0-known-collection-errors.txt"
+    }
+  },
+  "frontend": {
+    "test_files": 27,
+    "tests": 227,
+    "passed": 226,
+    "known_failures": 1,
+    "duration_seconds": 9.18,
+    "baseline_file": "wiki/docs/upgrade/node-0-known-frontend-failures.txt",
+    "build": {
+      "modules_transformed": 2753,
+      "duration_seconds": 10.13,
+      "dist_kib": 2100,
+      "largest_chunks": [
+        {"name": "vendor-charts", "raw_kib": 698.42, "gzip_kib": 231.81},
+        {"name": "index", "raw_kib": 393.14, "gzip_kib": 127.91},
+        {"name": "useFocusTrap", "raw_kib": 297.58, "gzip_kib": 91.09},
+        {"name": "Agent", "raw_kib": 157.61, "gzip_kib": 46.67}
+      ]
+    },
+    "npm_audit": {
+      "total": 3,
+      "low": 1,
+      "moderate": 1,
+      "high": 1,
+      "critical": 0,
+      "note": "Frozen for the later dependency/security node; no production deployment is authorized."
+    }
+  },
+  "acceptance": {
+    "full_command": "VIBE_PYTHON=/tmp/vibe-trading-node0-venv-20260716/bin/python scripts/node0-baseline --full",
+    "full_exit_code": 0,
+    "git_diff_check": "pass",
+    "ci_grep_gates": "pass"
+  }
+}
+

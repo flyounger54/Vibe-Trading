@@ -1,5 +1,5 @@
 import i18n from "@/i18n";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Database, KeyRound, Loader2, RotateCcw, Save, Server, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { api, isAuthRequiredError, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
@@ -17,8 +17,11 @@ interface LLMFormState {
 
 const fieldClass =
   "w-full rounded-md border bg-background px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
+const fieldErrorClass =
+  "w-full rounded-md border border-danger bg-background px-3 py-2 text-sm outline-none transition focus:border-danger focus:ring-2 focus:ring-danger/20 disabled:cursor-not-allowed disabled:opacity-60";
 const labelClass = "text-sm font-medium";
 const hintClass = "text-xs text-muted-foreground";
+const errorTextClass = "text-xs text-danger";
 
 function toForm(settings: LLMSettings): LLMFormState {
   return {
@@ -46,6 +49,27 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [dataSaving, setDataSaving] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
+  const validateField = useCallback((field: string, value: unknown) => {
+    let error = "";
+    if (field === "temperature") {
+      const n = Number(value);
+      if (isNaN(n) || n < 0 || n > 2) error = "Temperature must be between 0 and 2";
+    } else if (field === "timeout_seconds") {
+      const n = Number(value);
+      if (isNaN(n) || n < 1) error = "Timeout must be at least 1 second";
+    } else if (field === "base_url") {
+      const s = String(value).trim();
+      if (s && !/^https?:\/\/.+/.test(s)) error = "Must be a valid URL (http:// or https://)";
+    }
+    setFormErrors((prev) => {
+      if (error) return { ...prev, [field]: error };
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -111,6 +135,10 @@ export function Settings() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!form) return;
+    validateField("temperature", form.temperature);
+    validateField("timeout_seconds", form.timeout_seconds);
+    validateField("base_url", form.base_url);
+    if (Object.keys(formErrors).length > 0) return;
     setSaving(true);
     try {
       const updated = await api.updateLLMSettings({
@@ -282,10 +310,14 @@ export function Settings() {
               <input
                 value={form.base_url}
                 onChange={(event) => setForm({ ...form, base_url: event.target.value })}
-                className={fieldClass}
+                onBlur={() => validateField("base_url", form.base_url)}
+                className={formErrors.base_url ? fieldErrorClass : fieldClass}
                 placeholder={selectedProvider?.default_base_url}
                 disabled={selectedProvider?.auth_type === "oauth"}
+                aria-invalid={!!formErrors.base_url}
+                aria-describedby={formErrors.base_url ? "err-base_url" : undefined}
               />
+              {formErrors.base_url && <span id="err-base_url" role="alert" className={errorTextClass}>{formErrors.base_url}</span>}
             </label>
 
             <label className="grid gap-2">
@@ -341,8 +373,12 @@ export function Settings() {
                 step={0.1}
                 value={form.temperature}
                 onChange={(event) => setForm({ ...form, temperature: Number(event.target.value) })}
-                className={fieldClass}
+                onBlur={() => validateField("temperature", form.temperature)}
+                className={formErrors.temperature ? fieldErrorClass : fieldClass}
+                aria-invalid={!!formErrors.temperature}
+                aria-describedby={formErrors.temperature ? "err-temperature" : undefined}
               />
+              {formErrors.temperature && <span id="err-temperature" role="alert" className={errorTextClass}>{formErrors.temperature}</span>}
             </label>
 
             <label className="grid gap-2">
@@ -354,8 +390,12 @@ export function Settings() {
                 step={1}
                 value={form.timeout_seconds}
                 onChange={(event) => setForm({ ...form, timeout_seconds: Number(event.target.value) })}
-                className={fieldClass}
+                onBlur={() => validateField("timeout_seconds", form.timeout_seconds)}
+                className={formErrors.timeout_seconds ? fieldErrorClass : fieldClass}
+                aria-invalid={!!formErrors.timeout_seconds}
+                aria-describedby={formErrors.timeout_seconds ? "err-timeout_seconds" : undefined}
               />
+              {formErrors.timeout_seconds && <span id="err-timeout_seconds" role="alert" className={errorTextClass}>{formErrors.timeout_seconds}</span>}
             </label>
 
             <label className="grid gap-2">

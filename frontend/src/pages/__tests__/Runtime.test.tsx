@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Runtime } from "../Runtime";
 import type { LiveStatus } from "@/lib/api";
 
@@ -74,8 +74,8 @@ describe("Runtime page", () => {
 
     render(<Runtime />);
 
-    expect(await screen.findByText("Live / Paper Runtime Status")).toBeInTheDocument();
-    expect(screen.getByText("Clear")).toBeInTheDocument();
+    expect(await screen.findByText("Clear")).toBeInTheDocument();
+    expect(screen.getByText("Live / Paper Runtime Status")).toBeInTheDocument();
     expect(screen.getByText("paper")).toBeInTheDocument();
     expect(screen.getByText("auth present")).toBeInTheDocument();
     expect(screen.getByText("runner alive")).toBeInTheDocument();
@@ -103,8 +103,10 @@ describe("Runtime page", () => {
     render(<Runtime />);
     await screen.findByText("paper");
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const refreshButton = screen.getByRole("button", { name: "Refresh" });
+    fireEvent.click(refreshButton);
 
-    expect(apiMock.getLiveStatus).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(apiMock.getLiveStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refreshButton).toBeEnabled());
   });
 });

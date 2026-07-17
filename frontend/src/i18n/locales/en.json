@@ -8,6 +8,9 @@
     "runtime": "Runtime",
     "reports": "Reports",
     "alphaZoo": "Alpha Zoo",
+    "mlTraining": "ML Training",
+    "strategyZoo": "Strategy Zoo",
+    "industryChain": "Industry Chain",
     "settings": "Settings",
     "correlation": "Correlation Matrix",
     "sessions": "Sessions",
@@ -109,7 +112,8 @@
   },
   "connection": {
     "reconnecting": "Connection lost, reconnecting (attempt {{attempt}})…",
-    "disconnected": "Connection lost"
+    "disconnected": "Connection lost",
+    "offline": "You are offline — check your network connection"
   },
   "welcome": {
     "title": "Vibe-Trading",
@@ -259,7 +263,18 @@
     "uploaded": "Uploaded: {{filename}}",
     "uploadFailed": "Upload failed: {{error}}",
     "failedToSend": "Failed to send message, please retry.",
-    "failedToContinue": "Failed to continue goal, please retry."
+    "failedToContinue": "Failed to continue goal, please retry.",
+    "retry": "Retry",
+    "newResearchGoal": "New Research Goal",
+    "connectorHalted": "Connector runtime halted",
+    "haltConnector": "Halt connector runtime",
+    "moreOptions": "More options",
+    "uploadPdf": "Upload PDF document",
+    "researchGoal": "Research Goal",
+    "agentSwarm": "Agent Swarm",
+    "swarmGuide": "Swarm Guide",
+    "checkConnector": "Check Trading Connector",
+    "analyzePortfolio": "Analyze Connector Portfolio"
   },
   "runDetail": {
     "title": "Run Detail",
@@ -422,6 +437,255 @@
     "sampleCountTitle": "IC sample count",
     "noBenchmarkMatch": "No benchmark match"
   },
+  "mlTraining": {
+    "label": "ML Training",
+    "title": "Model Training Lab",
+    "description": "Train ML models with alpha-zoo factors, walk-forward CV, and anti-leakage auditing. Compare models and deploy signals to backtesting.",
+    "tabs": {
+      "models": "Models",
+      "train": "Train",
+      "features": "Features",
+      "compare": "Compare",
+      "health": "Health",
+      "guide": "Guide"
+    },
+    "models": {
+      "empty": "No trained models yet. Go to the Train tab to create one.",
+      "confirmDelete": "Delete model {{id}}?"
+    },
+    "train": {
+      "universe": "Universe",
+      "period": "Period",
+      "zoo": "Factor Zoo",
+      "modelType": "Model",
+      "horizon": "Horizon",
+      "labelType": "Label Type",
+      "benchmark": "Benchmark",
+      "costBps": "Cost (bps)",
+      "cvFolds": "CV Folds",
+      "days": "days",
+      "start": "Start Training",
+      "training": "Training...",
+      "progress": "Training Progress",
+      "overfitWarning": "Overfit detected: train/test IC ratio exceeds 3×. Consider reducing model complexity or increasing regularization.",
+      "cvMetrics": "CV Metrics",
+      "topFeatures": "Top Features"
+    },
+    "features": {
+      "create": "Create Feature Profile",
+      "run": "Run Selection",
+      "created": "Profile {{id}} created — {{n}} factors selected",
+      "empty": "No feature profiles yet."
+    },
+    "compare": {
+      "select": "Select models to compare",
+      "run": "Compare"
+    },
+    "health": {
+      "period": "Recent Period",
+      "check": "Check Health",
+      "noModels": "No models to check.",
+      "retrain": "Retrain",
+      "healthy": "Healthy"
+    },
+    "tips": {
+      "models": "This table shows all trained models. IC (Information Coefficient) measures prediction quality; AUC measures classification accuracy. An overfit warning means the model memorizes training data instead of learning patterns.",
+      "train": "Configure and launch model training. Walk-forward CV trains on historical data and tests on future data — mimicking real trading. Purge+Embargo automatically prevent label leakage at fold boundaries.",
+      "features": "Feature Profiles decouple feature selection from model training. Create a profile once, reuse it across multiple models. Use an earlier time period for selection to prevent selection bias leaking into training.",
+      "compare": "Select 2+ models to compare CV metrics side by side. Look for consistent IC across folds (low overfit ratio) rather than the highest single IC. Same horizon models are most comparable.",
+      "health": "Check if deployed models are decaying. Drift score = (train_IC - recent_IC) / train_IC. Score > 0.5 means the model has lost >50% of its predictive power and should be retrained."
+    },
+    "guide": {
+      "overview": {
+        "title": "How ML Training Works",
+        "p1": "The ML Training module turns Alpha Zoo factors into predictive trading signals. It follows a strict pipeline designed to prevent look-ahead bias (data leakage) at every step.",
+        "step1": {
+          "title": "Feature Engineering",
+          "desc": "Compute alpha-zoo factors (up to 452) as features. Optionally filter via IC, correlation, SHAP, or Boruta to keep only predictive factors."
+        },
+        "step2": {
+          "title": "Model Training",
+          "desc": "Train LightGBM, XGBoost, Ridge, or Deep NN with walk-forward cross-validation. Purge+Embargo prevent label leakage. Overfit detection warns when train/test gap is too large."
+        },
+        "step3": {
+          "title": "Compare & Ensemble",
+          "desc": "Compare models by IC, AUC, Sharpe, and backtest metrics. Combine top models into an ensemble (average, IC-weighted, or stacking) for more robust signals."
+        },
+        "step4": {
+          "title": "Deploy & Monitor",
+          "desc": "Use the best model in backtesting via mf_ml_predictor strategy. Monitor for alpha decay and set up sliding-window retraining schedules."
+        }
+      },
+      "quickstart": {
+        "title": "Quick Start (5 Steps)",
+        "s1": "Go to the Features tab and create a Feature Profile. Use a period before your training period (e.g. 2018-2020 for selection, 2020-2024 for training).",
+        "s1code": "Universe: CSI 300 | Period: 2018-2020 | Zoo: Qlib 158",
+        "s2": "Go to the Train tab. Select your universe, training period, model type, and label config. Set the feature_profile_id to the profile you just created.",
+        "s2code": "Universe: CSI 300 | Period: 2020-2024 | Model: LightGBM | Horizon: 5d | Label: binary",
+        "s3": "Repeat Step 2 with different models (XGBoost, Ridge) or horizons (1d, 7d, 14d) to create multiple models for comparison.",
+        "s3code": "",
+        "s4": "Go to the Compare tab. Select all your models and click Compare. Look for the model with the best IC and lowest overfit ratio.",
+        "s4code": "",
+        "s5": "Use the winning model_id in a backtest: set strategy to mf_ml_predictor and pass the model_id as a parameter. Or create an ensemble from the top models for more stable signals.",
+        "s5code": "Strategy: mf_ml_predictor | Params: {\"model_id\": \"lgb_csi300_binary5d_...\", \"top_pct\": 0.2}"
+      },
+      "leakage": {
+        "title": "Anti-Leakage Protection (6 Layers)",
+        "intro": "Look-ahead bias is the #1 cause of backtesting results that don't hold in production. The training pipeline enforces 6 layers of protection, and every training run is audited automatically.",
+        "purge": {
+          "name": "Label Purge",
+          "desc": "Removes training samples whose forward-return labels extend into the test period. Purge window = label horizon (e.g. 5 days for 5-day returns)."
+        },
+        "embargo": {
+          "name": "Embargo Gap",
+          "desc": "Additional buffer days between purged training data and test data to break autocorrelation leakage."
+        },
+        "selectionLeak": {
+          "name": "Selection Bias Guard",
+          "desc": "Feature selection runs on a separate time period (Mode A) or within each CV fold (Mode B). Never on the full dataset."
+        },
+        "preprocessLeak": {
+          "name": "Preprocessing Guard",
+          "desc": "Winsorize quantiles and z-score parameters are computed only on training-fold data, then applied to test data. Never fitted on test data."
+        },
+        "survivorship": {
+          "name": "Survivorship Bias Check",
+          "desc": "Point-in-time constituent loading ensures each historical date uses that date's actual index members, including stocks that were later delisted."
+        },
+        "cacheLeak": {
+          "name": "Cache Integrity",
+          "desc": "Feature cache only appends new dates forward. No backfilling. Preprocessing parameters are never cached — they're recomputed per training fold."
+        }
+      },
+      "features": {
+        "title": "Feature Selection Methods",
+        "intro": "452 raw factors contain noise and redundancy. Feature selection keeps only the factors that genuinely predict returns, improving model quality and preventing overfitting.",
+        "method": "Method",
+        "description": "What it does",
+        "speed": "Speed",
+        "methods": {
+          "ic_filter": "Keep factors with |ICIR| above threshold (default 0.3). Spearman rank IC measures monotonic prediction power.",
+          "corr_dedup": "Among highly correlated factor pairs (|corr| > 0.85), keep the one with higher IC. Removes redundant information.",
+          "mutual_info": "Mutual Information score captures non-linear dependencies between factors and returns. Catches patterns IC misses.",
+          "shap": "SHAP (SHapley Additive exPlanations) measures each factor's contribution to model predictions, considering interactions.",
+          "boruta": "Creates shadow features (randomly shuffled copies), trains Random Forest, statistically tests which real features outperform shadows.",
+          "importance": "Uses a trained model's gain-based feature importance to prune factors contributing < 1% of total gain."
+        },
+        "speeds": {
+          "ic_filter": "Fast (seconds)",
+          "corr_dedup": "Fast (seconds)",
+          "mutual_info": "Medium (minutes)",
+          "shap": "Slow (minutes)",
+          "boruta": "Slow (minutes)",
+          "importance": "Fast (post-training)"
+        }
+      },
+      "models": {
+        "title": "Supported Models",
+        "intro": "Four model backends are available. LightGBM and XGBoost handle missing values natively and are recommended for most use cases. Ridge is always available as a baseline.",
+        "lightgbm": {
+          "name": "LightGBM",
+          "desc": "Gradient boosting with leaf-wise growth. Fast training, strong tabular performance. Default: 63 leaves, lr=0.05, 500 trees.",
+          "nan": "Native NaN support",
+          "dep": "Optional: pip install 'vibe-trading[ml]'"
+        },
+        "xgboost": {
+          "name": "XGBoost",
+          "desc": "Gradient boosting with level-wise growth. Mature, well-tuned. Default: depth=6, lr=0.05, 500 trees.",
+          "nan": "Native NaN support",
+          "dep": "Optional: pip install 'vibe-trading[ml]'"
+        },
+        "ridge": {
+          "name": "Ridge Regression",
+          "desc": "L2-regularized linear regression. Always available as a baseline — if it beats tree models, your features are too noisy.",
+          "nan": "Median-fill + StandardScaler",
+          "dep": "Built-in (sklearn)"
+        },
+        "deep_nn": {
+          "name": "Deep Neural Network",
+          "desc": "3-layer MLP (256→128→1) with BatchNorm and Dropout. For capturing non-linear factor interactions.",
+          "nan": "Zero-fill + StandardScaler",
+          "dep": "Optional: pip install 'vibe-trading[ml-deep]'"
+        }
+      },
+      "labels": {
+        "title": "Label Types & Configuration",
+        "intro": "Labels define what the model learns to predict. Different label types suit different trading strategies and model types.",
+        "type": "Type",
+        "output": "Output",
+        "usage": "Best for",
+        "types": {
+          "return": {
+            "output": "Float (raw forward return)",
+            "usage": "Regression models, continuous signal strength ranking"
+          },
+          "rank": {
+            "output": "Float [0, 1] (cross-sectional percentile)",
+            "usage": "Regression models, when absolute return scale varies across time"
+          },
+          "binary": {
+            "output": "0 or 1 (above/below threshold)",
+            "usage": "Classification models (LightGBM/XGBoost auto-detect), clear buy/no-buy signal"
+          },
+          "top_bottom": {
+            "output": "+1 or -1 (top/bottom quantile, middle dropped)",
+            "usage": "Long-short strategies, models trained only on extreme outcomes"
+          }
+        },
+        "advanced": "Advanced label options:",
+        "benchmark": "Benchmark: Set to an index code (e.g. 000300.SH) to predict excess returns (alpha) instead of absolute returns. The model learns stock-picking skill, not market beta.",
+        "cost": "Transaction Cost: Set cost_bps (e.g. 15 = 15 basis points round-trip) to deduct trading costs before labeling. Prevents the model from learning \"signals\" that don't survive transaction costs."
+      },
+      "lifecycle": {
+        "title": "Model Lifecycle & Production",
+        "intro": "After finding a good model, deploy it and keep it healthy over time.",
+        "ensemble": {
+          "name": "Ensemble",
+          "desc": "Combine 2+ models via averaging, IC-weighting, or stacking. Ensembles typically outperform any single model by reducing variance."
+        },
+        "sliding": {
+          "name": "Sliding-Window Retraining",
+          "desc": "Set a schedule (monthly, quarterly) to automatically retrain with a rolling data window. Keeps the model adapted to recent market conditions."
+        },
+        "health": {
+          "name": "Health Monitoring",
+          "desc": "Regularly compare recent OOS IC with training CV IC. Drift score > 0.5 means the model has decayed significantly — retrain or replace."
+        },
+        "promote": {
+          "name": "Version Management",
+          "desc": "Each retrain creates a new version. Promote the best version to 'production'. The signal engine auto-uses the promoted version."
+        }
+      }
+    }
+  },
+  "strategyZoo": {
+    "title": "Strategy Zoo",
+    "prebuiltStrategy": "{{count}} pre-built quantitative trading strategies across 10 categories",
+    "heroDescription": "Browse pre-built strategies covering trend-following, mean-reversion, momentum, multi-factor, stat-arb, event-driven, volatility, allocation, crypto, and options. Click any strategy to view parameters and source code.",
+    "search": "Search",
+    "searchPlaceholder": "Filter by id, name or description…",
+    "category": "Category",
+    "allCategories": "All categories",
+    "universe": "Universe",
+    "allUniverses": "All universes",
+    "risk": "Risk",
+    "allRisks": "All risk levels",
+    "reference": "Reference",
+    "loading": "Loading strategies…",
+    "noResults": "No strategies match the current filters.",
+    "showing": "Showing",
+    "loadMore": "Load more",
+    "backToList": "Back to Strategy Zoo",
+    "loadError": "Could not load strategy",
+    "metadata": "Metadata",
+    "frequency": "Frequency",
+    "minBars": "Min bars",
+    "columnsRequired": "Columns required",
+    "defaultParams": "Default params",
+    "factorsUsed": "Factors used",
+    "sourceCode": "Source code",
+    "viewSource": "View source"
+  },
   "validation": {
     "noData": "No validation data available.",
     "monteCarlo": "Monte Carlo Permutation Test",
@@ -496,7 +760,8 @@
     "time": "Time",
     "iters": "Iters",
     "output": "Output",
-    "waitingForEvents": "Waiting for agent events..."
+    "waitingForEvents": "Waiting for agent events...",
+    "guide": "Guide"
   },
   "mandate": {
     "runtimeMandate": "Connector runtime mandate",

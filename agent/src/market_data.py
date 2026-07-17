@@ -20,9 +20,9 @@ DEFAULT_MAX_ROWS = 250
 # yfinance SDK), A-shares to the Tencent quote endpoint.
 _SOURCE_PATTERNS = [
     (re.compile(r"^local:", re.I), "local"),
-    (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tencent"),
-    (re.compile(r"^[A-Z]+\.US$", re.I), "yahoo"),
-    (re.compile(r"^\d{3,5}\.HK$", re.I), "yahoo"),
+    (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "astock"),
+    (re.compile(r"^[A-Z]+\.US$", re.I), "global"),
+    (re.compile(r"^\d{3,5}\.HK$", re.I), "global"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "okx"),
     (re.compile(r"^[A-Z]+/USDT$", re.I), "ccxt"),
 ]

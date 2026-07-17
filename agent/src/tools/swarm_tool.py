@@ -295,6 +295,22 @@ _PRESET_KEYWORDS: list[tuple[str, list[str], float]] = [
         0.85,
     ),
     (
+        "supply_chain_research_team",
+        [
+            r"supply\s*chain",
+            "chokepoint",
+            "bottleneck",
+            "供应链",
+            "卡脖子",
+            "瓶颈",
+            "光模块",
+            "CPO",
+            "InP",
+            "产业链",
+        ],
+        0.95,
+    ),
+    (
         "portfolio_review_board",
         [
             r"portfolio\s+review",
@@ -614,6 +630,7 @@ def _build_variables(preset_name: str, prompt: str) -> dict[str, str]:
         "sentiment_intelligence_team": {"market": market, "timeframe": "daily"},
         "technical_analysis_panel": {"target": g, "timeframe": "daily"},
         "sector_rotation_team": {"market": market, "goal": g},
+        "supply_chain_research_team": {"topic": g, "market": market},
         "portfolio_review_board": {"portfolio": g, "review_period": _extract_review_period(prompt), "goal": g},
         "ml_quant_lab": {"market": market, "target_variable": _extract_target_variable(prompt), "goal": g},
     }

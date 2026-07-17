@@ -3957,6 +3957,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
+    doctor_parser = subparsers.add_parser("doctor", help="Check the local runtime and workspace")
+    doctor_parser.add_argument(
+        "--json", dest="doctor_json", action="store_true", help="Print machine-readable JSON output"
+    )
+
     run_parser = subparsers.add_parser("run", help="Run a prompt")
     run_parser.add_argument("-p", "--prompt", dest="run_prompt", type=str, help="Prompt text")
     run_parser.add_argument("-f", "--prompt-file", dest="run_prompt_file", type=Path, help="Read prompt text from a file")
@@ -4570,6 +4575,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         return cmd_init()
+    if args.command == "doctor":
+        from cli.doctor import main as doctor_main
+
+        return doctor_main(json_output=bool(args.json or args.doctor_json))
     if args.command == "serve":
         return serve_main(raw_argv[1:])
     if args.command == "provider":

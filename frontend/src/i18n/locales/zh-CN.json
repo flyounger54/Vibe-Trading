@@ -8,6 +8,9 @@
     "runtime": "运行时",
     "reports": "报告",
     "alphaZoo": "Alpha 动物园",
+    "mlTraining": "模型训练",
+    "strategyZoo": "策略动物园",
+    "industryChain": "产业链看板",
     "settings": "设置",
     "correlation": "相关性矩阵",
     "sessions": "会话",
@@ -109,7 +112,8 @@
   },
   "connection": {
     "reconnecting": "连接已断开，正在重连（第 {{attempt}} 次）…",
-    "disconnected": "连接已断开"
+    "disconnected": "连接已断开",
+    "offline": "网络已断开 — 请检查网络连接"
   },
   "welcome": {
     "title": "Vibe-Trading",
@@ -259,7 +263,18 @@
     "uploaded": "已上传：{{filename}}",
     "uploadFailed": "上传失败：{{error}}",
     "failedToSend": "发送消息失败，请重试。",
-    "failedToContinue": "继续目标失败，请重试。"
+    "failedToContinue": "继续目标失败，请重试。",
+    "retry": "重试",
+    "newResearchGoal": "新建研究目标",
+    "connectorHalted": "交易通道已停止",
+    "haltConnector": "停止交易通道",
+    "moreOptions": "更多选项",
+    "uploadPdf": "上传 PDF 文档",
+    "researchGoal": "研究目标",
+    "agentSwarm": "智能体集群",
+    "swarmGuide": "集群指南",
+    "checkConnector": "检查交易通道",
+    "analyzePortfolio": "分析持仓组合"
   },
   "runDetail": {
     "title": "运行详情",
@@ -422,6 +437,255 @@
     "sampleCountTitle": "IC 样本数量",
     "noBenchmarkMatch": "无基准匹配"
   },
+  "mlTraining": {
+    "label": "模型训练",
+    "title": "模型训练实验室",
+    "description": "使用 Alpha Zoo 因子训练 ML 模型，Walk-forward 交叉验证 + 防穿越审计。支持模型对比和信号回测。",
+    "tabs": {
+      "models": "模型列表",
+      "train": "训练",
+      "features": "特征筛选",
+      "compare": "模型对比",
+      "health": "健康度",
+      "guide": "使用指南"
+    },
+    "models": {
+      "empty": "暂无已训练模型。前往「训练」标签页创建。",
+      "confirmDelete": "删除模型 {{id}}？"
+    },
+    "train": {
+      "universe": "股票池",
+      "period": "训练期",
+      "zoo": "因子库",
+      "modelType": "模型",
+      "horizon": "预测周期",
+      "labelType": "标签类型",
+      "benchmark": "基准",
+      "costBps": "交易成本(bps)",
+      "cvFolds": "CV折数",
+      "days": "天",
+      "start": "开始训练",
+      "training": "训练中...",
+      "progress": "训练进度",
+      "overfitWarning": "检测到过拟合：训练/测试 IC 比值超过 3 倍。建议降低模型复杂度或增加正则化。",
+      "cvMetrics": "交叉验证指标",
+      "topFeatures": "重要特征 Top 10"
+    },
+    "features": {
+      "create": "创建特征配置",
+      "run": "运行筛选",
+      "created": "特征配置 {{id}} 已创建 — 筛选出 {{n}} 个因子",
+      "empty": "暂无特征配置。"
+    },
+    "compare": {
+      "select": "选择模型进行对比",
+      "run": "对比"
+    },
+    "health": {
+      "period": "检测期间",
+      "check": "检测健康度",
+      "noModels": "暂无模型可检测。",
+      "retrain": "建议重训",
+      "healthy": "健康"
+    },
+    "tips": {
+      "models": "此表展示所有已训练模型。IC（信息系数）衡量预测质量；AUC 衡量分类准确度。过拟合警告表示模型记忆了训练数据而非学到了规律。",
+      "train": "配置并启动模型训练。Walk-forward CV 在历史数据上训练、在未来数据上测试——模拟真实交易。Purge+Embargo 自动防止标签在折边界泄漏。",
+      "features": "特征配置将特征筛选与模型训练解耦。创建一次配置，多个模型复用。建议用训练期之前的时间段做筛选，避免选择偏差泄漏。",
+      "compare": "选择 2 个以上模型对比 CV 指标。关注各折 IC 的一致性（低过拟合比），而非单个最高 IC。相同预测周期的模型最具可比性。",
+      "health": "检测已部署模型是否衰退。衰退分数 = (训练IC - 近期IC) / 训练IC。分数 > 0.5 表示模型预测力下降超50%，应重新训练。"
+    },
+    "guide": {
+      "overview": {
+        "title": "ML 训练工作原理",
+        "p1": "ML 训练模块将 Alpha Zoo 因子转化为预测性交易信号。它遵循严格的流水线设计，在每一步防止前瞻偏差（数据穿越）。",
+        "step1": {
+          "title": "特征工程",
+          "desc": "计算 Alpha Zoo 因子（最多 452 个）作为特征。可选通过 IC、相关性、SHAP 或 Boruta 筛选，只保留有预测力的因子。"
+        },
+        "step2": {
+          "title": "模型训练",
+          "desc": "使用 LightGBM、XGBoost、Ridge 或 Deep NN 进行 Walk-forward 交叉验证。Purge+Embargo 防止标签泄漏。过拟合检测在训练/测试差距过大时发出警告。"
+        },
+        "step3": {
+          "title": "对比与集成",
+          "desc": "通过 IC、AUC、夏普和回测指标对比模型。将最佳模型组合为集成模型（均值、IC 加权或 Stacking），获得更稳健的信号。"
+        },
+        "step4": {
+          "title": "部署与监控",
+          "desc": "通过 mf_ml_predictor 策略在回测中使用最佳模型。监控 Alpha 衰退，设置滑动窗口重训练计划。"
+        }
+      },
+      "quickstart": {
+        "title": "快速开始（5 步）",
+        "s1": "前往「特征筛选」标签页创建特征配置。筛选期应早于训练期（如筛选用 2018-2020，训练用 2020-2024）。",
+        "s1code": "股票池: CSI 300 | 期间: 2018-2020 | 因子库: Qlib 158",
+        "s2": "前往「训练」标签页。选择股票池、训练期、模型类型和标签配置。设置上一步创建的 feature_profile_id。",
+        "s2code": "股票池: CSI 300 | 期间: 2020-2024 | 模型: LightGBM | 周期: 5天 | 标签: binary",
+        "s3": "用不同模型（XGBoost、Ridge）或不同周期（1天、7天、14天）重复步骤 2，创建多个模型用于对比。",
+        "s3code": "",
+        "s4": "前往「模型对比」标签页。选择所有模型点击对比。找出 IC 最高且过拟合比最低的模型。",
+        "s4code": "",
+        "s5": "在回测中使用获胜模型的 model_id：策略设为 mf_ml_predictor，传入 model_id 参数。也可以从多个顶级模型创建集成模型获得更稳定的信号。",
+        "s5code": "策略: mf_ml_predictor | 参数: {\"model_id\": \"lgb_csi300_binary5d_...\", \"top_pct\": 0.2}"
+      },
+      "leakage": {
+        "title": "防穿越保护（6 层）",
+        "intro": "前瞻偏差是回测结果无法在实盘复现的首要原因。训练流水线强制执行 6 层保护，每次训练自动进行穿越审计。",
+        "purge": {
+          "name": "标签清洗（Purge）",
+          "desc": "移除训练样本中前瞻收益标签延伸到测试期的部分。清洗窗口 = 标签周期（如 5 天收益对应 5 天清洗）。"
+        },
+        "embargo": {
+          "name": "隔离缓冲（Embargo）",
+          "desc": "在清洗后的训练数据和测试数据之间增加额外缓冲天数，打破自相关泄漏。"
+        },
+        "selectionLeak": {
+          "name": "选择偏差防护",
+          "desc": "特征筛选在独立时间段（模式 A）或每个 CV 折内（模式 B）运行。绝不在全量数据上筛选。"
+        },
+        "preprocessLeak": {
+          "name": "预处理防护",
+          "desc": "Winsorize 分位数和 z-score 参数仅在训练折数据上计算，再应用到测试数据。绝不在测试数据上拟合。"
+        },
+        "survivorship": {
+          "name": "存活偏差检查",
+          "desc": "Point-in-time 成分股加载确保每个历史日期使用当时的实际指数成分，包括后来退市的股票。"
+        },
+        "cacheLeak": {
+          "name": "缓存完整性",
+          "desc": "特征缓存只向前追加新日期，不回填。预处理参数不缓存——每个训练折现场计算。"
+        }
+      },
+      "features": {
+        "title": "特征筛选方法",
+        "intro": "452 个原始因子包含噪声和冗余。特征筛选只保留真正能预测收益的因子，提升模型质量并防止过拟合。",
+        "method": "方法",
+        "description": "功能说明",
+        "speed": "速度",
+        "methods": {
+          "ic_filter": "保留 |ICIR| 超过阈值（默认 0.3）的因子。Spearman 秩 IC 衡量单调预测力。",
+          "corr_dedup": "高相关因子对（|corr| > 0.85）中保留 IC 更高的，去除冗余信息。",
+          "mutual_info": "互信息分数捕捉因子与收益的非线性依赖关系。可发现 IC 遗漏的模式。",
+          "shap": "SHAP 值衡量每个因子对模型预测的贡献，考虑因子交互效应。",
+          "boruta": "创建影子特征（随机打乱副本），训练随机森林，统计检验哪些真实特征显著优于影子。",
+          "importance": "使用训练好的模型的 gain 重要性剪掉贡献 < 1% 的因子。"
+        },
+        "speeds": {
+          "ic_filter": "快（秒级）",
+          "corr_dedup": "快（秒级）",
+          "mutual_info": "中等（分钟级）",
+          "shap": "慢（分钟级）",
+          "boruta": "慢（分钟级）",
+          "importance": "快（训练后）"
+        }
+      },
+      "models": {
+        "title": "支持的模型",
+        "intro": "提供四种模型后端。LightGBM 和 XGBoost 原生处理缺失值，适用于大多数场景。Ridge 作为始终可用的基线。",
+        "lightgbm": {
+          "name": "LightGBM",
+          "desc": "叶子优先的梯度提升。训练快、表格数据表现强。默认：63 叶子，lr=0.05，500 棵树。",
+          "nan": "原生 NaN 支持",
+          "dep": "可选: pip install 'vibe-trading[ml]'"
+        },
+        "xgboost": {
+          "name": "XGBoost",
+          "desc": "层优先的梯度提升。成熟、调参充分。默认：depth=6，lr=0.05，500 棵树。",
+          "nan": "原生 NaN 支持",
+          "dep": "可选: pip install 'vibe-trading[ml]'"
+        },
+        "ridge": {
+          "name": "Ridge 回归",
+          "desc": "L2 正则化线性回归。始终可用的基线——如果它优于树模型，说明你的特征噪声太大。",
+          "nan": "中位数填充 + StandardScaler",
+          "dep": "内置（sklearn）"
+        },
+        "deep_nn": {
+          "name": "深度神经网络",
+          "desc": "3 层 MLP（256→128→1），含 BatchNorm 和 Dropout。用于捕捉非线性因子交互。",
+          "nan": "零填充 + StandardScaler",
+          "dep": "可选: pip install 'vibe-trading[ml-deep]'"
+        }
+      },
+      "labels": {
+        "title": "标签类型与配置",
+        "intro": "标签定义模型学习预测的目标。不同标签类型适合不同交易策略和模型类型。",
+        "type": "类型",
+        "output": "输出",
+        "usage": "适用场景",
+        "types": {
+          "return": {
+            "output": "浮点数（原始前瞻收益）",
+            "usage": "回归模型，连续信号强度排序"
+          },
+          "rank": {
+            "output": "浮点数 [0, 1]（截面百分位排名）",
+            "usage": "回归模型，当绝对收益尺度随时间变化时"
+          },
+          "binary": {
+            "output": "0 或 1（高于/低于阈值）",
+            "usage": "分类模型（LightGBM/XGBoost 自动识别），明确的买/不买信号"
+          },
+          "top_bottom": {
+            "output": "+1 或 -1（头部/尾部分位，中间丢弃）",
+            "usage": "多空策略，模型只在极端结果上训练"
+          }
+        },
+        "advanced": "高级标签选项：",
+        "benchmark": "基准：设为指数代码（如 000300.SH）可预测超额收益（Alpha）而非绝对收益。模型学习选股能力而非市场 Beta。",
+        "cost": "交易成本：设置 cost_bps（如 15 = 双边 15 个基点）在标记前扣除交易成本。防止模型学到无法覆盖交易成本的「信号」。"
+      },
+      "lifecycle": {
+        "title": "模型生命周期与生产化",
+        "intro": "找到优质模型后，部署它并持续保持健康。",
+        "ensemble": {
+          "name": "模型集成",
+          "desc": "通过平均、IC 加权或 Stacking 组合 2+ 个模型。集成通常通过降低方差优于任何单一模型。"
+        },
+        "sliding": {
+          "name": "滑动窗口重训练",
+          "desc": "设置计划（月度、季度）自动用滚动数据窗口重训练。保持模型适应最新市场状态。"
+        },
+        "health": {
+          "name": "健康度监控",
+          "desc": "定期对比近期 OOS IC 与训练时 CV IC。衰退分数 > 0.5 表示模型显著衰退——需重训或替换。"
+        },
+        "promote": {
+          "name": "版本管理",
+          "desc": "每次重训创建新版本。将最佳版本提升为「生产版本」。信号引擎自动使用被提升的版本。"
+        }
+      }
+    }
+  },
+  "strategyZoo": {
+    "title": "策略动物园",
+    "prebuiltStrategy": "{{count}} 个预构建量化交易策略，覆盖 10 大类",
+    "heroDescription": "浏览涵盖趋势跟踪、均值回归、动量、多因子、统计套利、事件驱动、波动率、组合配置、加密货币和期权的预构建策略。点击任意策略查看参数和源码。",
+    "search": "搜索",
+    "searchPlaceholder": "按 ID、名称或描述筛选…",
+    "category": "分类",
+    "allCategories": "全部分类",
+    "universe": "市场",
+    "allUniverses": "全部市场",
+    "risk": "风险",
+    "allRisks": "全部风险等级",
+    "reference": "参考来源",
+    "loading": "加载策略中…",
+    "noResults": "没有匹配当前筛选条件的策略。",
+    "showing": "显示",
+    "loadMore": "加载更多",
+    "backToList": "返回策略动物园",
+    "loadError": "无法加载策略",
+    "metadata": "元数据",
+    "frequency": "频率",
+    "minBars": "最小K线数",
+    "columnsRequired": "所需数据列",
+    "defaultParams": "默认参数",
+    "factorsUsed": "关联因子",
+    "sourceCode": "源代码",
+    "viewSource": "查看源码"
+  },
   "validation": {
     "noData": "暂无验证数据。",
     "monteCarlo": "蒙特卡罗置换检验",
@@ -496,7 +760,8 @@
     "time": "耗时",
     "iters": "迭代",
     "output": "输出",
-    "waitingForEvents": "等待智能体事件..."
+    "waitingForEvents": "等待智能体事件...",
+    "guide": "使用手册"
   },
   "mandate": {
     "runtimeMandate": "连接器运行时 mandate",

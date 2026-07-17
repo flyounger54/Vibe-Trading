@@ -595,6 +595,9 @@ _SPA_HTML_PATH_REGEX: tuple[re.Pattern[str], ...] = (
     # ``/runs/{run_id}`` — RunDetail page. Excludes ``/runs/{id}/code``,
     # ``/runs/{id}/pine`` (API only) and ``/runs`` (collection endpoint).
     re.compile(r"^/runs/[^/]+/?$"),
+    # ``/ml-training`` and ``/ml-training/{tab}`` — ML Training SPA page.
+    # Distinct from ``/ml/`` API prefix (models, train, profiles, etc.).
+    re.compile(r"^/ml-training(?:/[^/]*)?/?$"),
 )
 
 
@@ -3273,6 +3276,27 @@ async def stop_runner_endpoint(payload: LiveRunnerControlRequest):
 
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
 register_alpha_routes(app)
+
+# ============================================================================
+# Strategy Zoo routes (Web UI) — defined in src/api/strategy_routes.py
+# ============================================================================
+
+from src.api.strategy_routes import register_strategy_routes  # noqa: E402
+register_strategy_routes(app)
+
+# ============================================================================
+# ML Training routes (Web UI) — defined in src/api/ml_routes.py
+# ============================================================================
+
+from src.api.ml_routes import register_ml_routes  # noqa: E402
+register_ml_routes(app)
+
+# ============================================================================
+# Industry Chain dashboard routes (Web UI) — src/api/industry_chain_routes.py
+# ============================================================================
+
+from src.api.industry_chain_routes import register_industry_chain_routes  # noqa: E402
+register_industry_chain_routes(app, require_auth, _get_swarm_runtime)
 
 
 # ============================================================================

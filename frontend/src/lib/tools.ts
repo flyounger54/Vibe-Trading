@@ -22,6 +22,8 @@ export const TOOL_LABELS: Record<string, string> = {
   create_task: "Create task",
   update_task: "Update task",
   spawn_subagent: "Spawn sub-agent",
+  get_supply_chain: "Supply-chain analysis",
+  get_theme_lifecycle: "Theme lifecycle tracking",
 };
 
 export function localizeToolName(tool: string, fallback?: string): string {

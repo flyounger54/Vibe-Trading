@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+# Reproduce the node 0 environment and build/test baseline without installing.
+#
+# Usage:
+#   scripts/node0-baseline --preflight  # versions, origins, locks, local tools
+#   scripts/node0-baseline --quick      # preflight + compile + doctor + doctor tests
+#   scripts/node0-baseline --full       # quick + pytest collection + frontend build/list
+#
+# Overrides:
+#   VIBE_PYTHON=/path/to/python3.11-or-3.12
+#   VIBE_NODE=/path/to/node20
+#   VIBE_NPM=/path/to/npm
+#
+# Exit codes:
+#   0  all requested checks passed
+#   1  a requested command failed
+#   2  an environment/tooling gap prevented one or more requested commands
+
+set -u
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+AGENT_DIR="$ROOT/agent"
+FRONTEND_DIR="$ROOT/frontend"
+cd "$ROOT" || exit 1
+MODE=quick
+RESULT=0
+PYTHON_OK=0
+NODE_OK=0
+PYTEST_OK=0
+FRONTEND_DEPS_OK=0
+
+usage() {
+  printf '%s\n' \
+    'Usage:' \
+    '  scripts/node0-baseline --preflight  # versions, origins, locks, local tools' \
+    '  scripts/node0-baseline --quick      # preflight + compile + doctor + doctor tests' \
+    '  scripts/node0-baseline --full       # quick + pytest collection + frontend build/list' \
+    '' \
+    'Overrides:' \
+    '  VIBE_PYTHON=/path/to/python3.11-or-3.12' \
+    '  VIBE_NODE=/path/to/node20' \
+    '  VIBE_NPM=/path/to/npm' \
+    '' \
+    'Exit codes: 0=pass, 1=command failure, 2=environment/tooling gap'
+}
+
+case "${1:---quick}" in
+  --preflight) MODE=preflight ;;
+  --quick) MODE=quick ;;
+  --full) MODE=full ;;
+  -h|--help) usage; exit 0 ;;
+  *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+  echo "Only one mode flag is accepted." >&2
+  exit 2
+fi
+
+pass() {
+  printf '[PASS] %s\n' "$1"
+}
+
+gap() {
+  printf '[GAP ] %s\n' "$1"
+  if [ "$RESULT" -eq 0 ]; then
+    RESULT=2
+  fi
+}
+
+fail() {
+  printf '[FAIL] %s\n' "$1"
+  RESULT=1
+}
+
+run_step() {
+  label=$1
+  shift
+  started=$(date +%s)
+  printf '\n== %s ==\n' "$label"
+  "$@"
+  rc=$?
+  elapsed=$(( $(date +%s) - started ))
+  if [ "$rc" -eq 0 ]; then
+    pass "$label (${elapsed}s)"
+  else
+    fail "$label exited $rc (${elapsed}s)"
+  fi
+  return 0
+}
+
+if [ -n "${VIBE_PYTHON:-}" ]; then
+  PYTHON_BIN=$VIBE_PYTHON
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN="$ROOT/.venv/bin/python"
+else
+  PYTHON_BIN=$(command -v python3 2>/dev/null || true)
+fi
+
+if [ -z "${PYTHON_BIN:-}" ] || [ ! -x "$PYTHON_BIN" ]; then
+  gap "Python executable not found; set VIBE_PYTHON to Python 3.11 or 3.12"
+else
+  PYTHON_MINOR=$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+  case "$PYTHON_MINOR" in
+    3.11|3.12)
+      PYTHON_OK=1
+      pass "Python $PYTHON_MINOR: $PYTHON_BIN"
+      ;;
+    *) gap "Unsupported Python ${PYTHON_MINOR:-unknown}: $PYTHON_BIN (expected 3.11 or 3.12)" ;;
+  esac
+fi
+
+if [ "$PYTHON_OK" -eq 1 ]; then
+  if PYTHONPATH="$AGENT_DIR${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -c '
+import importlib
+from pathlib import Path
+expected = (Path.cwd() / "agent").resolve()
+for name in ("cli", "src", "backtest"):
+    origin = Path(importlib.import_module(name).__file__).resolve()
+    if origin != expected and expected not in origin.parents:
+        raise SystemExit(f"{name} loaded outside workspace: {origin}")
+'; then
+    pass "cli/src/backtest import from $AGENT_DIR"
+  else
+    fail "Workspace package origin check"
+  fi
+
+  if PYTHONPATH="$AGENT_DIR${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -c 'import pytest' >/dev/null 2>&1; then
+    PYTEST_OK=1
+    pass "pytest is installed for $PYTHON_BIN"
+  else
+    gap "pytest is missing for $PYTHON_BIN; install the existing dev extra in an isolated environment"
+  fi
+fi
+
+if [ -n "${VIBE_NODE:-}" ]; then
+  NODE_BIN=$VIBE_NODE
+else
+  NODE_BIN=$(command -v node 2>/dev/null || true)
+  NODE_VERSION=$(${NODE_BIN:-false} --version 2>/dev/null || true)
+  if [ "${NODE_VERSION#v20.}" = "$NODE_VERSION" ] \
+    && [ -s "$HOME/.nvm/nvm.sh" ] \
+    && [ -f "$ROOT/.nvmrc" ]; then
+    NVM_VERSION=$(tr -d '[:space:]' < "$ROOT/.nvmrc")
+    NODE_BIN=$(bash -c '. "$HOME/.nvm/nvm.sh"; nvm which --silent "$1"' _ "$NVM_VERSION" 2>/dev/null || true)
+  fi
+fi
+
+if [ -z "${NODE_BIN:-}" ] || [ ! -x "$NODE_BIN" ]; then
+  gap "Node.js not found; install Node 20 (see .nvmrc)"
+else
+  NODE_VERSION=$($NODE_BIN --version 2>/dev/null || true)
+  case "$NODE_VERSION" in
+    v20.*)
+      NODE_OK=1
+      NODE_DIR=$(dirname -- "$NODE_BIN")
+      PATH="$NODE_DIR:$PATH"
+      export PATH
+      pass "Node.js $NODE_VERSION: $NODE_BIN"
+      ;;
+    *) gap "Unsupported Node.js ${NODE_VERSION:-unknown}: $NODE_BIN (expected v20.x)" ;;
+  esac
+fi
+
+if [ -n "${VIBE_NPM:-}" ]; then
+  NPM_BIN=$VIBE_NPM
+elif [ "$NODE_OK" -eq 1 ] && [ -x "$(dirname -- "$NODE_BIN")/npm" ]; then
+  NPM_BIN="$(dirname -- "$NODE_BIN")/npm"
+else
+  NPM_BIN=$(command -v npm 2>/dev/null || true)
+fi
+
+if [ -f "$FRONTEND_DIR/package-lock.json" ]; then
+  pass "Frontend dependency lock: frontend/package-lock.json"
+else
+  gap "Frontend package-lock.json is missing"
+fi
+
+if grep -Fq 'COPY requirements.lock requirements.lock' "$ROOT/Dockerfile" \
+  && grep -Fq -- 'pip install --no-cache-dir --no-deps -e .' "$ROOT/Dockerfile"; then
+  pass "Docker installs the lock and current workspace code"
+else
+  fail "Docker must install requirements.lock and the current workspace with --no-deps"
+fi
+
+if grep -Fq 'pip install -r requirements.lock' "$ROOT/.github/workflows/test.yml" \
+  && grep -Fq 'pip install --no-deps -e .' "$ROOT/.github/workflows/test.yml"; then
+  pass "CI installs the lock and current workspace code"
+else
+  fail "CI must install requirements.lock and the current workspace with --no-deps"
+fi
+
+if [ -f "$ROOT/requirements.lock" ]; then
+  pass "Python dependency lock: requirements.lock"
+  if [ "$PYTHON_OK" -eq 1 ]; then
+    if "$PYTHON_BIN" - "$ROOT/requirements.lock" <<'PY'
+from importlib import metadata
+from pathlib import Path
+import sys
+
+from packaging.requirements import Requirement
+
+missing = []
+mismatched = []
+for raw in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    requirement = Requirement(line)
+    if requirement.marker is not None and not requirement.marker.evaluate():
+        continue
+    try:
+        installed = metadata.version(requirement.name)
+    except metadata.PackageNotFoundError:
+        missing.append(requirement.name)
+        continue
+    if not requirement.specifier.contains(installed, prereleases=True):
+        mismatched.append(f"{requirement.name}: installed={installed}, required={requirement.specifier}")
+if missing or mismatched:
+    for item in missing:
+        print(f"missing locked package: {item}", file=sys.stderr)
+    for item in mismatched:
+        print(f"locked package mismatch: {item}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+      pass "Installed Python packages match requirements.lock"
+    else
+      fail "Installed Python packages do not match requirements.lock"
+    fi
+    if "$PYTHON_BIN" -m pip check; then
+      pass "Python dependency consistency (pip check)"
+    else
+      fail "Python dependency consistency (pip check)"
+    fi
+  fi
+elif [ -f "$ROOT/uv.lock" ] || [ -f "$ROOT/constraints.txt" ]; then
+  pass "Python dependency lock/constraints file found"
+else
+  gap "Python dependencies are range-based only; no uv.lock/constraints.txt/requirements.lock exists"
+fi
+
+if [ -x "$FRONTEND_DIR/node_modules/.bin/tsc" ] \
+  && [ -x "$FRONTEND_DIR/node_modules/.bin/vite" ] \
+  && [ -x "$FRONTEND_DIR/node_modules/.bin/vitest" ]; then
+  FRONTEND_DEPS_OK=1
+  pass "Frontend build/test binaries are installed locally"
+else
+  gap "Frontend node_modules is incomplete; run npm ci under Node 20 before the full baseline"
+fi
+
+if [ "$MODE" = preflight ]; then
+  printf '\nNode 0 baseline preflight exit: %s\n' "$RESULT"
+  exit "$RESULT"
+fi
+
+export PYTHONPATH="$AGENT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+if [ "$PYTHON_OK" -eq 1 ]; then
+  run_step "Python compile" "$PYTHON_BIN" -m compileall -q agent
+  run_step "Vibe-Trading doctor" "$PYTHON_BIN" -c \
+    'from cli.main import main; raise SystemExit(main(["doctor"]))'
+else
+  gap "Python compile and doctor skipped because the interpreter is unsupported"
+fi
+
+if [ "$PYTEST_OK" -eq 1 ]; then
+  run_step "Focused node 0 tests" "$PYTHON_BIN" -m pytest -q \
+    agent/tests/test_doctor.py \
+    agent/tests/test_node0_collection_baseline.py \
+    agent/tests/test_node0_frontend_baseline.py
+else
+  gap "Focused node 0 tests skipped because pytest is unavailable"
+fi
+
+if [ "$MODE" = full ]; then
+  if [ "$PYTEST_OK" -eq 1 ]; then
+    run_step "Backend pytest collection baseline" "$PYTHON_BIN" scripts/check_node0_collection.py \
+      wiki/docs/upgrade/node-0-known-collection-errors.txt
+  else
+    gap "Backend pytest collection skipped because pytest is unavailable"
+  fi
+
+  if [ "$NODE_OK" -eq 1 ] && [ "$FRONTEND_DEPS_OK" -eq 1 ] && [ -n "${NPM_BIN:-}" ]; then
+    run_step "Frontend build" bash -c 'cd "$1" && "$2" run build' _ "$FRONTEND_DIR" "$NPM_BIN"
+    run_step "Frontend test collection count" bash -o pipefail -c \
+      'cd "$1" && ./node_modules/.bin/vitest list | wc -l' _ "$FRONTEND_DIR"
+    run_step "Frontend test baseline" "$PYTHON_BIN" scripts/check_node0_frontend.py \
+      wiki/docs/upgrade/node-0-known-frontend-failures.txt
+  else
+    gap "Frontend build and test collection skipped; Node 20 and local node_modules are required"
+  fi
+fi
+
+printf '\nNode 0 baseline %s exit: %s\n' "$MODE" "$RESULT"
+exit "$RESULT"

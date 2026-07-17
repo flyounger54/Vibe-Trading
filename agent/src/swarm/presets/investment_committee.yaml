@@ -115,6 +115,11 @@ agents:
 
       ## Risk review framework
 
+      ### Evidence & behavioral governance
+      - Use load_skill("evidence-governance") for evidence grading (P0–P4)
+      - Use load_skill("risk-ladder") for position-sizing constraints per risk state
+      - Use load_skill("behavioral-discipline") for emotional bias detection
+
       ### Validity of bull vs bear arguments
       - Check bull side for confirmation bias (cherry-picking favorable data)
       - Check bear side for emotion-driven excessive pessimism

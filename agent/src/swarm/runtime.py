@@ -22,6 +22,18 @@ from typing import Callable
 
 from src.config.schema import AgentConfig
 from src.swarm import grounding
+from src.swarm.cross_validation import (
+    cross_validate,
+    format_cross_validation_block,
+    is_cross_validation_enabled,
+    run_debate_round,
+)
+from src.swarm.memory import is_memory_enabled
+from src.swarm.quality import (
+    build_quality_feedback,
+    is_quality_scoring_enabled,
+    score_report,
+)
 from src.swarm.models import (
     RunStatus,
     SwarmAgentSpec,
@@ -252,9 +264,27 @@ class SwarmRuntime:
         # which case workers see no extra section.
         grounding_block = grounding.format_grounding_block(run.grounding_data or {})
 
+        # Cross-run memory: load historical context for this target
+        past_context = ""
+        memory_key = ""
+        if is_memory_enabled():
+            from src.swarm.memory import load_history_context, resolve_memory_key
+            swarm_root = self._store.root_dir
+            memory_key = resolve_memory_key(run.user_vars, run.preset_name)
+            past_context = load_history_context(swarm_root, memory_key)
+            if past_context:
+                self._emit_event(
+                    run_id,
+                    self._make_event(
+                        "memory_loaded",
+                        data={"symbol": memory_key, "has_history": True},
+                    ),
+                )
+
         # Compute execution layers
         layers = topological_layers(run.tasks)
         task_summaries: dict[str, str] = {}
+        task_quality: dict[str, tuple[str, list[str]]] = {}
         all_succeeded = True
 
         try:
@@ -281,10 +311,12 @@ class SwarmRuntime:
                     agent_map=agent_map,
                     layer_task_ids=layer_task_ids,
                     task_summaries=task_summaries,
+                    task_quality=task_quality,
                     run_dir=run_dir,
                     cancel_event=cancel_event,
                     include_shell_tools=include_shell_tools,
                     grounding_block=grounding_block,
+                    past_context=past_context,
                 )
 
                 # Process results
@@ -295,6 +327,14 @@ class SwarmRuntime:
 
                     if result.status == "completed":
                         task_summaries[tid] = result.summary
+                        if is_quality_scoring_enabled():
+                            agent_id = next(
+                                (t.agent_id for t in run.tasks if t.id == tid),
+                                "",
+                            )
+                            task_quality[tid] = score_report(
+                                result.summary, agent_id=agent_id,
+                            )
                         now_iso = datetime.now(timezone.utc).isoformat()
                         task_store.update_status(
                             tid,
@@ -384,6 +424,21 @@ class SwarmRuntime:
         self._store.update_run(run)
         self._emit_event(run_id, self._make_event("run_completed", data={"status": final_status.value}))
 
+        # Cross-run memory: record decision (Phase A)
+        if is_memory_enabled() and memory_key and run.final_report and all_succeeded:
+            from src.swarm.memory import record_decision
+            try:
+                agents_roles = [a.role for a in run.agents]
+                record_decision(
+                    swarm_root=self._store.root_dir,
+                    memory_key=memory_key,
+                    preset_name=run.preset_name,
+                    final_report=run.final_report,
+                    agents_roles=agents_roles,
+                )
+            except Exception:
+                logger.warning("Failed to record memory for run %s", run_id, exc_info=True)
+
         # Cleanup cancel event and live callback
         with self._lock:
             self._cancel_events.pop(run_id, None)
@@ -466,10 +521,12 @@ class SwarmRuntime:
         agent_map: dict[str, SwarmAgentSpec],
         layer_task_ids: list[str],
         task_summaries: dict[str, str],
+        task_quality: dict[str, tuple[str, list[str]]],
         run_dir: Path,
         cancel_event: threading.Event,
         include_shell_tools: bool = False,
         grounding_block: str = "",
+        past_context: str = "",
     ) -> dict[str, WorkerResult]:
         """Execute all tasks in a single layer in parallel, with retry on failure.
 
@@ -482,15 +539,23 @@ class SwarmRuntime:
             agent_map: Agent specs keyed by agent_id.
             layer_task_ids: Task IDs in this layer.
             task_summaries: Accumulated task summaries from previous layers.
+            task_quality: Accumulated quality grades from previous layers.
             run_dir: Run directory path.
             cancel_event: Cancellation event.
             include_shell_tools: Whether workers may register shell tools.
             grounding_block: Pre-rendered "Ground Truth" markdown for workers.
+            past_context: Historical context from cross-run memory.
 
         Returns:
             Mapping of task_id -> WorkerResult for all tasks in this layer.
         """
         results: dict[str, WorkerResult] = {}
+
+        # Pre-compute downstream count for auto model tiering
+        downstream_count: dict[str, int] = {t.id: 0 for t in run.tasks}
+        for t in run.tasks:
+            for dep in t.depends_on:
+                downstream_count[dep] = downstream_count.get(dep, 0) + 1
 
         def _event_callback(event: SwarmEvent) -> None:
             self._emit_event(run.id, event)
@@ -555,6 +620,20 @@ class SwarmRuntime:
                     )
                     continue
 
+                # Auto model tiering: leaf/middle → quick, terminal → deep
+                if agent_spec.model_name is None:
+                    is_terminal = downstream_count.get(tid, 0) == 0
+                    deep = os.getenv("SWARM_DEEP_MODEL")
+                    quick = os.getenv("SWARM_QUICK_MODEL")
+                    if is_terminal and deep:
+                        agent_spec = agent_spec.model_copy(
+                            update={"model_name": deep},
+                        )
+                    elif quick:
+                        agent_spec = agent_spec.model_copy(
+                            update={"model_name": quick},
+                        )
+
                 # Mark task as in_progress
                 task_store.update_status(
                     tid,
@@ -568,12 +647,40 @@ class SwarmRuntime:
 
                 # Build upstream summaries from input_from mapping
                 upstream: dict[str, str] = {}
+                upstream_grades: dict[str, tuple[str, list[str]]] = {}
                 for context_key, source_task_id in task.input_from.items():
                     if source_task_id in task_summaries:
                         upstream[context_key] = task_summaries[source_task_id]
+                        if source_task_id in task_quality:
+                            upstream_grades[context_key] = task_quality[source_task_id]
+
+                if upstream_grades:
+                    from src.swarm.quality import format_quality_summary
+                    upstream["_quality_summary"] = format_quality_summary(
+                        upstream_grades,
+                    )
+
+                # Cross-validation for fan-in nodes (≥2 upstream sources)
+                real_upstream = {
+                    k: v for k, v in upstream.items() if not k.startswith("_")
+                }
+                if len(real_upstream) >= 2 and is_cross_validation_enabled():
+                    cv_block = self._run_cross_validation(
+                        upstream_summaries=upstream,
+                        task_id=tid,
+                        agent_id=agent_spec.id,
+                        run_id=run.id,
+                    )
+                    if cv_block:
+                        upstream["_cross_validation"] = cv_block
+
+                # Inject historical context for terminal nodes
+                is_terminal = downstream_count.get(tid, 0) == 0
+                if is_terminal and past_context:
+                    upstream["_past_context"] = past_context
 
                 future = executor.submit(
-                    self._run_worker_with_retries,
+                    self._run_and_quality_check,
                     agent_spec=agent_spec,
                     task=task,
                     upstream_summaries=upstream,
@@ -585,7 +692,8 @@ class SwarmRuntime:
                     grounding_block=grounding_block,
                 )
                 futures[future] = tid
-                per_task_budget = agent_spec.timeout_seconds * (agent_spec.max_retries + 1)
+                quality_retry_budget = agent_spec.timeout_seconds if is_quality_scoring_enabled() else 0
+                per_task_budget = agent_spec.timeout_seconds * (agent_spec.max_retries + 1) + quality_retry_budget
                 layer_budget = max(layer_budget, per_task_budget)
 
             # Collect results with a hard layer-level deadline — defends against
@@ -725,6 +833,235 @@ class SwarmRuntime:
                 }
             )
         return result  # type: ignore[return-value]
+
+    def _run_and_quality_check(
+        self,
+        agent_spec: SwarmAgentSpec,
+        task: SwarmTask,
+        upstream_summaries: dict[str, str],
+        user_vars: dict[str, str],
+        run_dir: Path,
+        event_callback: Callable[[SwarmEvent], None] | None,
+        run_id: str,
+        include_shell_tools: bool = False,
+        grounding_block: str = "",
+    ) -> WorkerResult:
+        """Run a worker with failure retries, then quality-check the result."""
+        result = self._run_worker_with_retries(
+            agent_spec=agent_spec,
+            task=task,
+            upstream_summaries=upstream_summaries,
+            user_vars=user_vars,
+            run_dir=run_dir,
+            event_callback=event_callback,
+            run_id=run_id,
+            include_shell_tools=include_shell_tools,
+            grounding_block=grounding_block,
+        )
+        return self._quality_retry_if_needed(
+            result=result,
+            agent_spec=agent_spec,
+            task=task,
+            upstream_summaries=upstream_summaries,
+            user_vars=user_vars,
+            run_dir=run_dir,
+            event_callback=event_callback,
+            run_id=run_id,
+            include_shell_tools=include_shell_tools,
+            grounding_block=grounding_block,
+        )
+
+    def _quality_retry_if_needed(
+        self,
+        result: WorkerResult,
+        agent_spec: SwarmAgentSpec,
+        task: SwarmTask,
+        upstream_summaries: dict[str, str],
+        user_vars: dict[str, str],
+        run_dir: Path,
+        event_callback: Callable[[SwarmEvent], None] | None,
+        run_id: str,
+        include_shell_tools: bool,
+        grounding_block: str,
+    ) -> WorkerResult:
+        """Re-run a worker once if its output scores D or F.
+
+        Quality scoring is deterministic and adds zero latency. When a
+        completed worker's summary is graded D or F, inject quality
+        feedback into the retry's upstream context and re-run the worker
+        exactly once.  The quality retry is independent of the failure
+        retry budget in ``max_retries``.
+
+        Returns the original result unchanged when quality scoring is
+        disabled, the grade is acceptable (A/B/C), or the retry also
+        produces a D/F grade.
+        """
+        if not is_quality_scoring_enabled():
+            return result
+
+        if result.status not in ("completed", "incomplete"):
+            return result
+
+        grade, issues = score_report(result.summary, agent_id=agent_spec.id)
+
+        self._emit_event(
+            run_id,
+            self._make_event(
+                "quality_scored",
+                agent_id=agent_spec.id,
+                task_id=task.id,
+                data={"grade": grade, "issues": issues},
+            ),
+        )
+
+        if grade not in ("D", "F"):
+            return result
+
+        feedback = build_quality_feedback(grade, issues)
+        retry_upstream = {**upstream_summaries, "_quality_feedback": feedback}
+
+        self._emit_event(
+            run_id,
+            self._make_event(
+                "quality_retry",
+                agent_id=agent_spec.id,
+                task_id=task.id,
+                data={"grade": grade, "feedback": feedback[:200]},
+            ),
+        )
+
+        logger.info(
+            "Quality retry for task %s (grade=%s, issues=%s)",
+            task.id,
+            grade,
+            issues,
+        )
+
+        retry_result = run_worker(
+            agent_spec=agent_spec,
+            task=task,
+            upstream_summaries=retry_upstream,
+            user_vars=user_vars,
+            run_dir=run_dir,
+            event_callback=event_callback,
+            include_shell_tools=include_shell_tools,
+            grounding_block=grounding_block,
+            agent_config=self._agent_config,
+        )
+
+        retry_grade, _ = score_report(retry_result.summary, agent_id=agent_spec.id)
+
+        combined_in = result.input_tokens + retry_result.input_tokens
+        combined_out = result.output_tokens + retry_result.output_tokens
+
+        if retry_grade in ("D", "F"):
+            return result.model_copy(
+                update={
+                    "input_tokens": combined_in,
+                    "output_tokens": combined_out,
+                }
+            )
+
+        return retry_result.model_copy(
+            update={
+                "input_tokens": combined_in,
+                "output_tokens": combined_out,
+            }
+        )
+
+    def _run_cross_validation(
+        self,
+        upstream_summaries: dict[str, str],
+        task_id: str,
+        agent_id: str,
+        run_id: str,
+    ) -> str | None:
+        """Best-effort cross-validation + debate for a fan-in merge node.
+
+        Returns a formatted markdown block to inject into upstream_context,
+        or None if cross-validation is skipped or fails.
+        """
+        real_upstream = {
+            k: v for k, v in upstream_summaries.items() if not k.startswith("_")
+        }
+
+        self._emit_event(
+            run_id,
+            self._make_event(
+                "cross_validation_started",
+                agent_id=agent_id,
+                task_id=task_id,
+                data={"upstream_count": len(real_upstream)},
+            ),
+        )
+
+        cv_result = cross_validate(upstream_summaries)
+
+        if cv_result is None:
+            self._emit_event(
+                run_id,
+                self._make_event(
+                    "cross_validation_failed",
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    data={"error": "LLM call failed or no parseable result"},
+                ),
+            )
+            return None
+
+        contradictions = cv_result.get("contradictions", [])
+        high_count = sum(
+            1 for c in contradictions
+            if isinstance(c, dict) and c.get("severity") == "high"
+        )
+
+        self._emit_event(
+            run_id,
+            self._make_event(
+                "cross_validation_result",
+                agent_id=agent_id,
+                task_id=task_id,
+                data={
+                    "contradictions_count": len(contradictions),
+                    "high_severity_count": high_count,
+                    "blind_spots_count": len(cv_result.get("blind_spots", [])),
+                    "consensus_count": len(cv_result.get("consensus", [])),
+                },
+            ),
+        )
+
+        resolutions: list[dict[str, str]] = []
+        if high_count > 0:
+            self._emit_event(
+                run_id,
+                self._make_event(
+                    "debate_started",
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    data={"contradictions_to_debate": high_count},
+                ),
+            )
+            try:
+                resolutions = run_debate_round(
+                    cv_result, upstream_summaries, llm=llm,
+                )
+            except Exception:
+                logger.warning(
+                    "Debate round failed for task %s", task_id, exc_info=True,
+                )
+
+            if resolutions:
+                self._emit_event(
+                    run_id,
+                    self._make_event(
+                        "debate_completed",
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        data={"resolutions_count": len(resolutions)},
+                    ),
+                )
+
+        return format_cross_validation_block(cv_result, resolutions)
 
     def _cancel_remaining_tasks(
         self,

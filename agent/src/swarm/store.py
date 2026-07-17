@@ -331,15 +331,15 @@ class SwarmStore:
             interval = float(os.getenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0"))
         except ValueError:
             interval = 3.0
-        heartbeat_floor = max(60.0, interval * 10.0)
+        heartbeat_floor = max(180.0, interval * 30.0)
 
         agent_budgets = [
             max(1, int(agent.timeout_seconds or 300)) * (max(0, int(agent.max_retries)) + 1)
             for agent in run.agents
         ]
-        retry_ceiling = (max(agent_budgets) if agent_budgets else 300) + 60
+        retry_ceiling = (max(agent_budgets) if agent_budgets else 300) + 120
 
-        return float(max(60.0, min(heartbeat_floor, retry_ceiling)))
+        return float(max(180.0, min(heartbeat_floor, retry_ceiling)))
 
     def is_run_stale(self, run: SwarmRun, *, now: datetime | None = None) -> bool:
         """Read-only check: is this ``running`` run silent past its threshold?

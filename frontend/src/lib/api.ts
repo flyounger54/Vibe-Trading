@@ -31,23 +31,67 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
   return new ApiError(detail, res.status);
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const { headers, ...rest } = options ?? {};
+const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 1_000;
+
+function isRetryable(status: number): boolean {
+  return status >= 500 && status <= 599;
+}
+
+interface RequestOptions extends RequestInit {
+  timeout?: number;
+  retries?: number;
+}
+
+async function request<T>(path: string, options?: RequestOptions): Promise<T> {
+  const { headers, timeout = DEFAULT_TIMEOUT_MS, retries = MAX_RETRIES, ...rest } = options ?? {};
   const mergedHeaders: Record<string, string> = { "Content-Type": "application/json", ...authHeaders() };
   if (headers) {
     new Headers(headers).forEach((value, key) => {
       mergedHeaders[key] = value;
     });
   }
-  const res = await fetch(`${BASE}${path}`, {
-    ...rest,
-    headers: mergedHeaders,
-  });
-  if (!res.ok) {
-    throw await errorFromResponse(res);
+
+  let lastError: ApiError | undefined;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** (attempt - 1)));
+    }
+
+    const timeoutSignal = AbortSignal.timeout(timeout);
+    const merged = rest.signal
+      ? AbortSignal.any([rest.signal, timeoutSignal])
+      : timeoutSignal;
+
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        ...rest,
+        signal: merged,
+        headers: mergedHeaders,
+      });
+      if (!res.ok) {
+        const err = await errorFromResponse(res);
+        if (isRetryable(res.status) && attempt < retries) {
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+      const text = await res.text();
+      return text ? JSON.parse(text) : ({} as T);
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      if (e instanceof DOMException && e.name === "TimeoutError") {
+        throw new ApiError("Request timed out", 0);
+      }
+      if (e instanceof DOMException && e.name === "AbortError") {
+        throw new ApiError("Request cancelled", 0);
+      }
+      throw e;
+    }
   }
-  const text = await res.text();
-  return text ? JSON.parse(text) : ({} as T);
+  throw lastError ?? new ApiError("Request failed after retries", 0);
 }
 
 export interface UploadResult {
@@ -56,14 +100,36 @@ export interface UploadResult {
   filename: string;
 }
 
-async function uploadFile(file: File): Promise<UploadResult> {
+async function uploadFile(file: File, onProgress?: (pct: number) => void): Promise<UploadResult> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE}/upload`, { method: "POST", headers: authHeaders(), body: form });
-  if (!res.ok) {
-    throw await errorFromResponse(res);
+
+  if (!onProgress) {
+    const res = await fetch(`${BASE}/upload`, { method: "POST", headers: authHeaders(), body: form });
+    if (!res.ok) throw await errorFromResponse(res);
+    return res.json();
   }
-  return res.json();
+
+  return new Promise<UploadResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}/upload`);
+    const hdrs = authHeaders();
+    for (const [k, v] of Object.entries(hdrs)) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        let detail = `HTTP ${xhr.status}`;
+        try { const b = JSON.parse(xhr.responseText); detail = b.detail || b.message || detail; } catch { /* ignore */ }
+        reject(new ApiError(detail, xhr.status));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError("Upload failed", 0));
+    xhr.send(form);
+  });
 }
 
 function appendQueryParam(url: string, key: string, value: string): string {
@@ -163,6 +229,19 @@ export const api = {
     }),
   alphaBenchStreamUrl: (jobId: string) =>
     withAuthQuery(`${BASE}/alpha/bench/${encodeURIComponent(jobId)}/stream`),
+
+  // Strategy Zoo API
+  listStrategies: (params: StrategyListParams = {}) => {
+    const q = new URLSearchParams();
+    if (params.category) q.set("category", params.category);
+    if (params.universe) q.set("universe", params.universe);
+    if (params.risk) q.set("risk", params.risk);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return request<StrategyListResponse>(`/strategy/list${qs ? `?${qs}` : ""}`);
+  },
+  getStrategy: (strategyId: string) =>
+    request<StrategyDetailResponse>(`/strategy/${encodeURIComponent(strategyId)}`),
   createAlphaCompare: (body: AlphaCompareRequest) =>
     request<{ status: string; job_id: string }>("/alpha/compare", {
       method: "POST",
@@ -202,6 +281,100 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ broker }),
     }),
+
+  // ML Training API
+  listMLModels: (sortBy = "created_at") =>
+    request<MLModelsResponse>(`/ml/models?sort_by=${sortBy}`),
+  getMLModel: (modelId: string) =>
+    request<MLModelDetailResponse>(`/ml/models/${encodeURIComponent(modelId)}`),
+  deleteMLModel: (modelId: string) =>
+    request<{ status: string; deleted: string }>(`/ml/models/${encodeURIComponent(modelId)}`, { method: "DELETE" }),
+  startMLTrain: (body: MLTrainRequest) =>
+    request<{ status: string; job_id: string }>("/ml/train", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  mlTrainStreamUrl: (jobId: string) =>
+    withAuthQuery(`${BASE}/ml/train/${encodeURIComponent(jobId)}/stream`),
+  listFeatureProfiles: () =>
+    request<MLProfilesResponse>("/ml/profiles"),
+  createFeatureProfile: (body: MLSelectFeaturesRequest) =>
+    request<MLProfileCreateResponse>("/ml/profiles", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  compareMLModels: (modelIds: string[]) =>
+    request<MLCompareResponse>("/ml/compare", {
+      method: "POST",
+      body: JSON.stringify({ model_ids: modelIds }),
+    }),
+  createEnsemble: (body: MLEnsembleRequest) =>
+    request<{ status: string; ensemble_id: string }>("/ml/ensemble", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  checkModelHealth: (body: MLHealthRequest) =>
+    request<MLHealthResponse>("/ml/health", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listExperiments: () =>
+    request<MLExperimentsResponse>("/ml/experiments"),
+
+  // --- Industry Chain dashboard ---
+  listChainTemplates: () =>
+    request<{ templates: ChainTemplate[] }>("/industry-chain/templates"),
+  listChains: () =>
+    request<{ chains: ChainSummary[] }>("/industry-chain/list"),
+  getChain: (id: string) =>
+    request<Chain>(`/industry-chain/${encodeURIComponent(id)}`),
+  createChain: (body: CreateChainRequest) =>
+    request<{ status: string; chain_id: string; chain: Chain }>("/industry-chain", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateChain: (id: string, body: UpdateChainRequest) =>
+    request<{ status: string; chain: Chain }>(`/industry-chain/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteChain: (id: string) =>
+    request<{ status: string }>(`/industry-chain/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  analyzeChain: (id: string, market?: string) =>
+    request<{ status: string; chain_id: string; run_id: string }>(
+      `/industry-chain/${encodeURIComponent(id)}/analyze`,
+      { method: "POST", body: JSON.stringify({ market: market ?? null }) },
+    ),
+  getChainStatus: (id: string) =>
+    request<ChainStatus>(`/industry-chain/${encodeURIComponent(id)}/status`),
+  getChainHistory: (id: string) =>
+    request<{ chain_id: string; snapshots: ChainSnapshot[] }>(
+      `/industry-chain/${encodeURIComponent(id)}/history`,
+    ),
+  getChainSwarmDetail: (id: string) =>
+    request<ChainSwarmDetail>(`/industry-chain/${encodeURIComponent(id)}/swarm-detail`),
+  setChainSchedule: (id: string, schedule: string) =>
+    request<{ status: string; chain_id: string; refresh_schedule: string }>(
+      `/industry-chain/${encodeURIComponent(id)}/schedule`,
+      { method: "PUT", body: JSON.stringify({ schedule }) },
+    ),
+  compareChains: (ids: string) =>
+    request<ChainCompareResult>(`/industry-chain/compare?ids=${encodeURIComponent(ids)}`),
+  listChainHypotheses: (id: string) =>
+    request<{ chain_id: string; hypotheses: ChainHypothesis[] }>(
+      `/industry-chain/${encodeURIComponent(id)}/hypotheses`,
+    ),
+  createChainHypothesis: (id: string, body: CreateHypothesisRequest) =>
+    request<{ status: string; hypothesis: ChainHypothesis }>(
+      `/industry-chain/${encodeURIComponent(id)}/hypotheses`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  exportChain: (id: string) =>
+    request<{ chain_id: string; filename: string; markdown: string }>(
+      `/industry-chain/${encodeURIComponent(id)}/export`,
+    ),
 };
 
 // --- Swarm types ---
@@ -317,6 +490,8 @@ export interface TradeMarker {
   qty?: number;
   reason?: string;
   text?: string;
+  stop_loss?: number;
+  take_profit?: number;
 }
 
 export interface EquityPoint {
@@ -735,6 +910,48 @@ export interface AlphaCompareResult {
   skipped: AlphaCompareSkip[];
 }
 
+// --- Strategy Zoo types ---
+
+export interface StrategyListParams {
+  category?: string;
+  universe?: string;
+  risk?: string;
+  limit?: number;
+}
+
+export interface StrategySummary {
+  id: string;
+  category: string;
+  nickname: string;
+  description: string;
+  universe: string[];
+  frequency: string[];
+  risk_profile: string;
+  min_bars: number;
+  reference: string;
+  default_params: Record<string, unknown>;
+  columns_required: string[];
+  factors_used: string[];
+}
+
+export interface StrategyListResponse {
+  strategies: StrategySummary[];
+  total: number;
+  health: { loaded: number; failed: number };
+}
+
+export interface StrategyDetail {
+  id: string;
+  category: string;
+  module_path: string;
+  meta: Record<string, unknown>;
+}
+
+export interface StrategyDetailResponse {
+  strategy: StrategyDetail;
+  source_code: string;
+}
+
 // --- Connector runtime channel types ---
 
 /** One mandate profile inside a `mandate.proposal` event (SPEC Consent §1). */
@@ -918,4 +1135,359 @@ export interface MessageItem {
   created_at: string;
   linked_attempt_id?: string;
   metadata?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// ML Training types
+// ---------------------------------------------------------------------------
+
+export interface MLModelSummary {
+  model_id: string;
+  model_type: string;
+  universe: string;
+  period: string;
+  label_horizon: number;
+  label_type: string;
+  benchmark: string | null;
+  n_features: number;
+  n_train_samples: number;
+  cv_ic_mean: number | null;
+  cv_auc_mean: number | null;
+  overfit_warning: boolean;
+  created_at: string;
+}
+
+export interface MLModelsResponse {
+  status: string;
+  models: MLModelSummary[];
+  total: number;
+}
+
+export interface MLModelDetailResponse {
+  status: string;
+  metadata: Record<string, unknown>;
+  train_log: Record<string, unknown>[];
+}
+
+export interface MLTrainRequest {
+  universe: string;
+  period: string;
+  zoo?: string;
+  feature_profile_id?: string;
+  model_type?: string;
+  model_params?: Record<string, unknown>;
+  label_horizon?: number;
+  label_type?: string;
+  benchmark?: string;
+  cost_bps?: number;
+  n_splits?: number;
+  model_id?: string;
+}
+
+export interface MLTrainProgress {
+  stage: string;
+  message?: string;
+  model_type?: string;
+  universe?: string;
+  model_id?: string;
+}
+
+export interface MLTrainResult {
+  model_id: string;
+  model_path: string;
+  n_features: number;
+  n_train_samples: number;
+  cv_summary: Record<string, number>;
+  overfit_warning: boolean;
+  top_features: Record<string, number>;
+  wall_seconds: number;
+}
+
+export interface MLSelectFeaturesRequest {
+  universe: string;
+  period: string;
+  zoo?: string;
+  methods?: string[];
+  profile_id?: string;
+}
+
+export interface MLProfileSummary {
+  profile_id: string;
+  zoo: string;
+  universe: string;
+  n_selected: number;
+  methods: string[];
+  created_at: string;
+}
+
+export interface MLProfilesResponse {
+  status: string;
+  profiles: MLProfileSummary[];
+  total: number;
+}
+
+export interface MLProfileCreateResponse {
+  status: string;
+  profile_id: string;
+  n_selected: number;
+  factors: string[];
+  methods: string[];
+}
+
+export interface MLCompareRow {
+  model_id: string;
+  model_type: string;
+  horizon: number;
+  label_type: string;
+  benchmark: string;
+  n_features: number;
+  test_ic_mean: number | null;
+  test_auc_mean: number | null;
+  overfit_warning: boolean;
+  [key: string]: unknown;
+}
+
+export interface MLCompareResponse {
+  status: string;
+  comparison: MLCompareRow[];
+}
+
+export interface MLEnsembleRequest {
+  model_ids: string[];
+  method?: string;
+  weights?: number[];
+  ensemble_id?: string;
+}
+
+export interface MLHealthRequest {
+  model_id?: string;
+  recent_period: string;
+  base_id?: string;
+}
+
+export interface MLHealthResponse {
+  status: string;
+  model_id?: string;
+  train_ic?: number;
+  recent_ic?: number;
+  drift_score?: number;
+  retrain_recommended?: boolean;
+  reports?: Array<{
+    model_id: string;
+    drift_score: number;
+    retrain_recommended: boolean;
+  }>;
+  // version drift fields
+  base_id?: string;
+  ic_trend?: number[];
+  sustained_decline?: boolean;
+  sudden_drop?: boolean;
+  recommendation?: string;
+}
+
+export interface MLExperimentsResponse {
+  status: string;
+  experiments: Array<{
+    name: string;
+    universe: string;
+    model_type: string;
+    horizon: number | string;
+    label_type: string;
+    has_schedule: boolean;
+  }>;
+}
+
+// --- Industry Chain dashboard types ---
+
+export interface ChainTemplate {
+  key: string;
+  name: string;
+  name_en: string;
+  description: string;
+  segment_count: number;
+}
+
+export interface ChainTicker {
+  code: string;
+  name: string;
+  market: string;
+  score: number | null;
+  tier: string;
+  classification: string;
+  confidence: string;
+  key_products: string;
+  red_team_note: string;
+}
+
+export interface ChainSegment {
+  segment_id: string;
+  name: string;
+  name_en: string;
+  order: number;
+  positioning: string;
+  value_weight: string;
+  localization_rate: string;
+  international_competition: string;
+  domestic_competition: string;
+  barrier_type: string;
+  barrier_description: string;
+  chokepoint_score: Record<string, number>;
+  chokepoint_total: number | null;
+  status: string;
+  tickers: ChainTicker[];
+}
+
+export interface ChainOverview {
+  structure_summary: string;
+  lifecycle_stage: string;
+  prosperity_score: number | null;
+  sector_score: number | null;
+  core_targets: ChainTicker[];
+}
+
+export interface Chain {
+  chain_id: string;
+  name: string;
+  name_en: string;
+  description: string;
+  market: string;
+  status: string;
+  template_key: string;
+  swarm_run_id: string;
+  refresh_schedule: string;
+  created_at: string;
+  updated_at: string;
+  overview: ChainOverview;
+  segments: ChainSegment[];
+}
+
+export interface ChainSummary {
+  chain_id: string;
+  name: string;
+  name_en: string;
+  description: string;
+  market: string;
+  status: string;
+  template_key: string;
+  segment_count: number;
+  lifecycle_stage: string;
+  prosperity_score: number | null;
+  refresh_schedule: string;
+  updated_at: string;
+}
+
+export interface ChainStatus {
+  chain_id: string;
+  status: string;
+  run_id: string;
+  run_status?: string;
+  ingested?: boolean;
+  task_count?: number;
+  completed_count?: number;
+}
+
+export interface ChainSnapshot {
+  recorded_at: string;
+  lifecycle_stage: string;
+  prosperity_score: number | null;
+  sector_score: number | null;
+  segment_scores: Record<string, number>;
+}
+
+export interface CreateChainRequest {
+  template_key?: string;
+  name?: string;
+  segment_names?: string[];
+  description?: string;
+  market?: string;
+}
+
+export interface UpdateChainRequest {
+  name?: string;
+  description?: string;
+  market?: string;
+  segments?: ChainSegment[];
+}
+
+export interface SwarmTaskSummary {
+  task_id: string;
+  agent_id: string;
+  agent_role: string;
+  status: string;
+  summary_preview: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface QualityEvent {
+  task_id: string;
+  agent_id: string;
+  agent_role?: string;
+  grade?: string;
+  issues?: string[];
+  type?: string;
+  contradictions_count?: number;
+  consensus_count?: number;
+  blind_spots_count?: number;
+  timestamp: string;
+}
+
+export interface CrossValidationEvent {
+  contradictions_count: number;
+  consensus_count: number;
+  blind_spots_count: number;
+  high_severity: number;
+  timestamp: string;
+}
+
+export interface ChainSwarmDetail {
+  chain_id: string;
+  run_id: string;
+  run_status: string;
+  tasks: SwarmTaskSummary[];
+  quality: QualityEvent[];
+  cross_validation: CrossValidationEvent[];
+  final_report_length: number;
+  total_tokens: { input: number; output: number };
+}
+
+export interface ChainCompareItem {
+  chain_id: string;
+  name: string;
+  status: string;
+  lifecycle_stage: string;
+  prosperity_score: number | null;
+  sector_score: number | null;
+  segment_scores: Record<string, number>;
+  segment_names: string[];
+}
+
+export interface SharedTicker {
+  code: string;
+  name: string;
+  chains: string[];
+}
+
+export interface ChainCompareResult {
+  chains: ChainCompareItem[];
+  shared_tickers: SharedTicker[];
+}
+
+export interface ChainHypothesis {
+  hypothesis_id: string;
+  title: string;
+  thesis: string;
+  status: string;
+  universe: string;
+  invalidation_notes: string;
+  run_cards: Array<Record<string, unknown>>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateHypothesisRequest {
+  title: string;
+  thesis: string;
+  status?: string;
+  invalidation_notes?: string;
 }

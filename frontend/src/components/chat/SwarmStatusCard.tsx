@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { memo } from "react";
 import {
+  BookOpen,
   CheckCircle2,
   Circle,
   Clock,
@@ -16,6 +17,7 @@ import type { SwarmAgentDisplayStatus, SwarmRunStatus } from "@/types/agent";
 
 interface Props {
   status: SwarmRunStatus;
+  onOpenGuide?: () => void;
 }
 
 function formatElapsed(seconds: number | undefined): string {
@@ -83,7 +85,7 @@ function runTone(status: SwarmRunStatus["status"]): string {
   }
 }
 
-export const SwarmStatusCard = memo(function SwarmStatusCard({ status }: Props) {
+export const SwarmStatusCard = memo(function SwarmStatusCard({ status, onOpenGuide }: Props) {
   const { t } = useTranslation();
   const done = status.agents.filter((agent) => ["done", "failed", "blocked", "cancelled"].includes(agent.status)).length;
   const total = status.agents.length;
@@ -103,9 +105,22 @@ export const SwarmStatusCard = memo(function SwarmStatusCard({ status }: Props) 
               {status.status.replace(/_/g, " ")}
             </span>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-            <Clock className="h-3 w-3" />
-            <span>{t('swarmStatus.agents', { done, total: total || 0 })}</span>
+          <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+            {onOpenGuide && (
+              <button
+                type="button"
+                onClick={onOpenGuide}
+                className="flex items-center gap-1 hover:text-primary transition-colors"
+                title={t('swarmStatus.guide')}
+              >
+                <BookOpen className="h-3 w-3" />
+                <span>{t('swarmStatus.guide')}</span>
+              </button>
+            )}
+            <span className="flex items-center gap-1">
+              <Clock className="h-3 w-3" />
+              {t('swarmStatus.agents', { done, total: total || 0 })}
+            </span>
           </div>
         </div>
 

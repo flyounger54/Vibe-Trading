@@ -37,29 +37,18 @@ class MarketDataTool(BaseTool):
                 "type": "string",
                 "enum": [
                     "auto",
-                    "yfinance",
-                    "yahoo",
+                    "astock",
+                    "global",
+                    "tushare",
                     "okx",
                     "ccxt",
-                    "tushare",
-                    "baostock",
-                    "tencent",
-                    "akshare",
-                    "mootdx",
-                    "eastmoney",
-                    "sina",
-                    "stooq",
-                    "finnhub",
-                    "alphavantage",
-                    "tiingo",
-                    "fmp",
+                    "local",
                 ],
                 "description": (
                     "Data source. 'auto' detects from symbol format with fallback. "
-                    "Free, no key: yfinance/yahoo (US/HK equities), okx/ccxt "
-                    "(crypto), baostock/tencent/eastmoney/sina/akshare/mootdx "
-                    "(China A-shares), stooq (global EOD). Key-gated REST: tushare "
-                    "(China A-shares), finnhub/alphavantage/tiingo/fmp (US/global)."
+                    "astock (A-shares via mootdx+tencent), global (US/HK via "
+                    "Yahoo+Sina), tushare (A-shares+futures+fund, needs token), "
+                    "okx/ccxt (crypto), local (user data bridge)."
                 ),
                 "default": "auto",
             },

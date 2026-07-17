@@ -36,6 +36,9 @@ from backtest.metrics import (
     calc_metrics,
 )
 from backtest.models import EquitySnapshot, Position, TradeRecord
+from backtest.position_sizing.loader import load_position_sizer
+from backtest.position_sizing.models import SizingContext, SizingResult, StopState
+from backtest.position_sizing.protocol import PositionSizer
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +252,24 @@ def _maybe_enrich_events(
         ) from exc
 
 
+# ─── Cash flow parsing ───
+
+
+def _parse_cash_flows(config: Dict[str, Any]) -> Dict[pd.Timestamp, float]:
+    """Parse optional ``position_sizing.cash_flows`` into a date→amount map."""
+    ps_config = config.get("position_sizing") or {}
+    raw = ps_config.get("cash_flows") or []
+    flows: Dict[pd.Timestamp, float] = {}
+    for entry in raw:
+        try:
+            ts = pd.Timestamp(entry["date"])
+            amount = float(entry["amount"])
+            flows[ts] = flows.get(ts, 0.0) + amount
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("Skipping invalid cash_flow entry %s: %s", entry, exc)
+    return flows
+
+
 # ─── Base Engine ───
 
 
@@ -273,6 +294,13 @@ class BaseEngine(ABC):
         self.equity_snapshots: List[EquitySnapshot] = []
         self._bar_idx: int = 0
         self._active_symbol: str = ""  # set by _rebalance/_close_position for subclass use
+
+        # Position sizing (opt-in — None means legacy behaviour)
+        self._position_sizer: Optional[PositionSizer] = None
+        self._peak_equity: float = self.initial_capital
+        self._stop_tracker: Dict[str, StopState] = {}
+        self._cash_flows: Dict[pd.Timestamp, float] = {}
+        self._price_lookback: int = config.get("position_sizing", {}).get("price_lookback", 60)
 
     # ── Market rule interface (subclass must implement) ──
 
@@ -427,6 +455,12 @@ class BaseEngine(ABC):
         # Sync codes after _align may have dropped all-NaN symbols
         valid_codes = [c for c in valid_codes if c in target_pos.columns]
 
+        # 3b. Load position sizer (opt-in — backward compatible)
+        self._position_sizer = load_position_sizer(config)
+        self._peak_equity = self.initial_capital
+        self._stop_tracker = {}
+        self._cash_flows = _parse_cash_flows(config)
+
         # 4. Bar-by-bar execution
         self._execute_bars(dates, data_map, close_df, target_pos, valid_codes)
 
@@ -444,7 +478,7 @@ class BaseEngine(ABC):
             from backtest.benchmark import resolve_benchmark
             bench_result = resolve_benchmark(
                 strategy_codes=codes,
-                source=config.get("source", "yfinance"),
+                source=config.get("source", "astock"),
                 start_date=config.get("start_date", ""),
                 end_date=config.get("end_date", ""),
                 interval=interval,
@@ -516,16 +550,50 @@ class BaseEngine(ABC):
                 if ts in data_map[c].index:
                     self.on_bar(c, data_map[c].loc[ts], ts)
 
-            # b. Rebalance each symbol to target weight
+            # a2. Cash flow injection/withdrawal
+            if ts in self._cash_flows:
+                self.capital += self._cash_flows[ts]
+
+            # b. Stop management — check all open positions for stop triggers
+            if self._position_sizer is not None:
+                self._check_all_stops(close_df, data_map, ts)
+
+            # c. Rebalance each symbol to target weight
             equity = self._calc_equity(close_df, ts)
+            self._peak_equity = max(self._peak_equity, equity)
+
             for c in codes:
                 try:
                     target_w = float(target_pos.at[ts, c]) if ts in target_pos.index else 0.0
+
+                    # Apply position sizer to adjust weight + set stops
+                    if self._position_sizer is not None and abs(target_w) > 1e-9:
+                        ctx = self._build_sizing_context(
+                            c, target_w, ts, equity, close_df, data_map,
+                        )
+                        result = self._position_sizer.size(ctx)
+                        target_w = result.target_weight
+
+                        # Record stop state for new positions
+                        if c not in self.positions and abs(target_w) > 1e-9:
+                            self._stop_tracker[c] = StopState(
+                                symbol=c,
+                                stop_loss=result.stop_loss,
+                                take_profit=result.take_profit,
+                                trailing_stop_distance=result.trailing_stop_distance,
+                                trailing_stop_high=self._safe_price(close_df, ts, c, 0),
+                                exit_bar=(
+                                    i + result.exit_time_bars
+                                    if result.exit_time_bars is not None
+                                    else None
+                                ),
+                            )
+
                     self._rebalance(c, target_w, data_map.get(c), ts, equity)
                 except Exception as exc:
                     logger.warning("Rebalance failed for %s at %s: %s", c, ts, exc)
 
-            # c. Record equity snapshot
+            # d. Record equity snapshot
             snap_equity = self._calc_equity(close_df, ts)
             total_unrealized = 0.0
             for p in self.positions.values():
@@ -539,7 +607,7 @@ class BaseEngine(ABC):
                 positions=len(self.positions),
             ))
 
-        # d. Force close all remaining positions
+        # e. Force close all remaining positions
         if len(dates) > 0:
             last_ts = dates[-1]
             for c in list(self.positions.keys()):
@@ -564,7 +632,10 @@ class BaseEngine(ABC):
         ts: pd.Timestamp,
         equity: float,
     ) -> None:
-        """Adjust position for *symbol* toward *target_weight*."""
+        """Adjust position for *symbol* toward *target_weight*.
+
+        Supports incremental add/reduce when position sizing is active.
+        """
         self._active_symbol = symbol
         target_dir = 1 if target_weight > 1e-9 else (-1 if target_weight < -1e-9 else 0)
         current_pos = self.positions.get(symbol)
@@ -585,8 +656,25 @@ class BaseEngine(ABC):
                     open_price = float(bar.get("open", bar.get("close", 0)))
                     price = self.apply_slippage(open_price, -current_pos.direction)
                     self._close_position(symbol, price, ts, "signal")
+                    self._stop_tracker.pop(symbol, None)
                 else:
                     return  # blocked (e.g. limit-down can't sell)
+
+            # Incremental adjust: same direction, weight changed
+            elif self._position_sizer is not None and target_dir == current_pos.direction:
+                current_notional = current_pos.size * self._safe_price(
+                    pd.DataFrame(), ts, symbol, current_pos.entry_price,
+                )
+                current_w = current_notional / equity if equity > 1e-9 else 0.0
+                delta = abs(target_weight) - current_w
+                if delta > 0.01:
+                    self._add_to_position(symbol, delta, bar, ts, equity)
+                    return
+                elif delta < -0.01:
+                    self._reduce_position(symbol, abs(delta), bar, ts, equity)
+                    return
+                else:
+                    return  # delta too small, skip
 
         # Open new if target non-zero and no remaining position
         if target_dir != 0 and symbol not in self.positions:
@@ -670,6 +758,258 @@ class BaseEngine(ABC):
             holding_bars=holding_bars,
             commission=pos.entry_commission + exit_comm,
         ))
+
+    # ── Position sizing helpers ──
+
+    def _check_all_stops(
+        self,
+        close_df: pd.DataFrame,
+        data_map: Dict[str, pd.DataFrame],
+        ts: pd.Timestamp,
+    ) -> None:
+        """Check stop/exit conditions for all open positions."""
+        for symbol in list(self.positions.keys()):
+            stop = self._stop_tracker.get(symbol)
+            if stop is None:
+                continue
+
+            pos = self.positions[symbol]
+            price = self._safe_price(close_df, ts, symbol, pos.entry_price)
+            bar = data_map[symbol].loc[ts] if (
+                symbol in data_map and ts in data_map[symbol].index
+            ) else None
+
+            # Must pass market rules before we can close
+            if bar is None or not self.can_execute(symbol, 0, bar):
+                continue
+
+            exit_reason = self._evaluate_stop(stop, pos, price, self._bar_idx)
+
+            if exit_reason is not None:
+                exec_price = self.apply_slippage(
+                    float(bar.get("open", bar.get("close", price))),
+                    -pos.direction,
+                )
+                self._close_position(symbol, exec_price, ts, exit_reason)
+                self._stop_tracker.pop(symbol, None)
+            else:
+                # Update trailing stop high-water mark
+                if stop.trailing_stop_distance is not None:
+                    new_high = max(stop.trailing_stop_high, price) if pos.direction == 1 else stop.trailing_stop_high
+                    new_low = min(stop.trailing_stop_high, price) if pos.direction == -1 else stop.trailing_stop_high
+                    new_hwm = new_high if pos.direction == 1 else new_low
+                    if new_hwm != stop.trailing_stop_high:
+                        new_sl = (
+                            new_hwm - stop.trailing_stop_distance
+                            if pos.direction == 1
+                            else new_hwm + stop.trailing_stop_distance
+                        )
+                        self._stop_tracker[symbol] = StopState(
+                            symbol=symbol,
+                            stop_loss=new_sl,
+                            take_profit=stop.take_profit,
+                            trailing_stop_distance=stop.trailing_stop_distance,
+                            trailing_stop_high=new_hwm,
+                            exit_bar=stop.exit_bar,
+                        )
+
+    @staticmethod
+    def _evaluate_stop(
+        stop: StopState, pos: Position, price: float, bar_idx: int,
+    ) -> Optional[str]:
+        """Return exit reason if any stop/exit condition is triggered, else None."""
+        if stop.stop_loss is not None:
+            if pos.direction == 1 and price <= stop.stop_loss:
+                return "stop_loss"
+            if pos.direction == -1 and price >= stop.stop_loss:
+                return "stop_loss"
+
+        if stop.take_profit is not None:
+            if pos.direction == 1 and price >= stop.take_profit:
+                return "take_profit"
+            if pos.direction == -1 and price <= stop.take_profit:
+                return "take_profit"
+
+        if stop.exit_bar is not None and bar_idx >= stop.exit_bar:
+            return "time_exit"
+
+        return None
+
+    def _build_sizing_context(
+        self,
+        symbol: str,
+        signal_weight: float,
+        ts: pd.Timestamp,
+        equity: float,
+        close_df: pd.DataFrame,
+        data_map: Dict[str, pd.DataFrame],
+    ) -> SizingContext:
+        """Assemble read-only context for the position sizer."""
+        current_pos = self.positions.get(symbol)
+        price = self._safe_price(close_df, ts, symbol, 0.0)
+
+        # Current weight of this symbol
+        if current_pos is not None and equity > 1e-9:
+            pos_val = current_pos.size * price
+            current_weight = pos_val / equity
+        else:
+            current_weight = 0.0
+
+        # Total exposure across all positions
+        total_exposure = 0.0
+        if equity > 1e-9:
+            for p in self.positions.values():
+                p_price = self._safe_price(close_df, ts, p.symbol, p.entry_price)
+                total_exposure += abs(p.size * p_price) / equity
+
+        # Price history slice for volatility calculation
+        df = data_map.get(symbol)
+        price_history = None
+        if df is not None:
+            idx_pos = df.index.get_indexer([ts], method="pad")
+            if len(idx_pos) > 0 and idx_pos[0] >= 0:
+                end = idx_pos[0] + 1
+                start = max(0, end - self._price_lookback)
+                price_history = df.iloc[start:end]
+
+        bar = df.loc[ts] if (df is not None and ts in df.index) else pd.Series(dtype=float)
+
+        # Recent trades (last 50)
+        recent = tuple(self.trades[-50:])
+
+        return SizingContext(
+            timestamp=ts,
+            symbol=symbol,
+            signal_weight=signal_weight,
+            current_price=price,
+            bar=bar,
+            equity=equity,
+            capital=self.capital,
+            initial_equity=self.initial_capital,
+            current_position=current_pos,
+            current_weight=current_weight,
+            all_positions=tuple(self.positions.values()),
+            total_exposure=total_exposure,
+            recent_trades=recent,
+            peak_equity=self._peak_equity,
+            bar_idx=self._bar_idx,
+            price_history=price_history,
+        )
+
+    def _add_to_position(
+        self,
+        symbol: str,
+        delta_weight: float,
+        bar: pd.Series,
+        ts: pd.Timestamp,
+        equity: float,
+    ) -> None:
+        """Add to an existing position (pyramid / scale-in)."""
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return
+        if not self.can_execute(symbol, pos.direction, bar):
+            return
+
+        open_price = float(bar.get("open", bar.get("close", 0)))
+        if open_price <= 0:
+            return
+
+        slipped = self.apply_slippage(open_price, pos.direction)
+        add_notional = delta_weight * equity * pos.leverage
+        add_raw = self._calc_raw_size(symbol, add_notional, slipped)
+        add_size = self.round_size(add_raw, slipped)
+        if add_size <= 0:
+            return
+
+        margin = self._calc_margin(symbol, add_size, slipped, pos.leverage)
+        comm = self.calc_commission(add_size, slipped, pos.direction, is_open=True)
+        if margin + comm > self.capital:
+            return
+
+        # Weighted average entry price
+        total_size = pos.size + add_size
+        avg_price = (pos.entry_price * pos.size + slipped * add_size) / total_size
+
+        self.capital -= (margin + comm)
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            direction=pos.direction,
+            entry_price=avg_price,
+            entry_time=pos.entry_time,
+            size=total_size,
+            leverage=pos.leverage,
+            entry_bar_idx=pos.entry_bar_idx,
+            entry_commission=pos.entry_commission + comm,
+        )
+
+    def _reduce_position(
+        self,
+        symbol: str,
+        delta_weight: float,
+        bar: pd.Series,
+        ts: pd.Timestamp,
+        equity: float,
+    ) -> None:
+        """Reduce an existing position (scale-out), recording a partial trade."""
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return
+        if not self.can_execute(symbol, 0, bar):
+            return
+
+        open_price = float(bar.get("open", bar.get("close", 0)))
+        if open_price <= 0:
+            return
+
+        slipped = self.apply_slippage(open_price, -pos.direction)
+        reduce_notional = delta_weight * equity * pos.leverage
+        reduce_raw = self._calc_raw_size(symbol, reduce_notional, slipped)
+        reduce_size = self.round_size(reduce_raw, slipped)
+        if reduce_size <= 0:
+            return
+        reduce_size = min(reduce_size, pos.size)
+
+        # Record partial trade
+        pnl = self._calc_pnl(symbol, pos.direction, reduce_size, pos.entry_price, slipped)
+        margin_freed = self._calc_margin(symbol, reduce_size, pos.entry_price, pos.leverage)
+        pnl_pct = pnl / margin_freed * 100 if margin_freed > 1e-9 else 0.0
+        exit_comm = self.calc_commission(reduce_size, slipped, pos.direction, is_open=False)
+
+        self.capital += margin_freed + pnl - exit_comm
+        entry_comm_portion = pos.entry_commission * (reduce_size / pos.size)
+
+        self.trades.append(TradeRecord(
+            symbol=symbol,
+            direction=pos.direction,
+            entry_price=pos.entry_price,
+            exit_price=slipped,
+            entry_time=pos.entry_time,
+            exit_time=ts,
+            size=reduce_size,
+            leverage=pos.leverage,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            exit_reason="partial_close",
+            holding_bars=max(self._bar_idx - pos.entry_bar_idx, 0),
+            commission=entry_comm_portion + exit_comm,
+        ))
+
+        remaining = pos.size - reduce_size
+        if remaining < 1e-9:
+            self.positions.pop(symbol, None)
+            self._stop_tracker.pop(symbol, None)
+        else:
+            self.positions[symbol] = Position(
+                symbol=symbol,
+                direction=pos.direction,
+                entry_price=pos.entry_price,
+                entry_time=pos.entry_time,
+                size=remaining,
+                leverage=pos.leverage,
+                entry_bar_idx=pos.entry_bar_idx,
+                entry_commission=pos.entry_commission - entry_comm_portion,
+            )
 
     # ── Artifacts ──
 

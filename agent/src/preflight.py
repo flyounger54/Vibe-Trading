@@ -154,32 +154,25 @@ def _check_okx() -> CheckResult:
         )
 
 
-def _check_yfinance() -> CheckResult:
-    """Check yfinance availability."""
+def _check_global_stock() -> CheckResult:
+    """Check Yahoo Finance / global stock data availability."""
     try:
-        import yfinance  # noqa: F401
-    except ImportError:
-        return CheckResult(
-            name="yfinance",
-            status="skipped",
-            message="package not installed",
-            impact="US/HK equity backtest unavailable",
+        import requests
+        r = requests.get(
+            "https://query2.finance.yahoo.com/v8/finance/chart/AAPL",
+            params={"interval": "1d", "range": "1d"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
         )
-
-    try:
-        import yfinance as yf
-
-        ticker = yf.Ticker("AAPL")
-        info = ticker.fast_info
-        if hasattr(info, "last_price") and info.last_price:
-            return CheckResult(name="yfinance", status="ready", message="reachable", impact="")
-        return CheckResult(name="yfinance", status="ready", message="reachable (no price data)", impact="")
+        if r.status_code == 200:
+            return CheckResult(name="global-stock", status="ready", message="Yahoo Finance reachable", impact="")
+        return CheckResult(name="global-stock", status="error", message=f"HTTP {r.status_code}", impact="US/HK equity data degraded")
     except Exception as exc:
         return CheckResult(
-            name="yfinance",
+            name="global-stock",
             status="error",
             message=f"{type(exc).__name__}: {exc}",
-            impact="US/HK equity backtest unavailable",
+            impact="US/HK equity data unavailable (Sina fallback only)",
         )
 
 
@@ -207,16 +200,18 @@ def _check_tushare() -> CheckResult:
     return CheckResult(name="Tushare", status="ready", message="token configured", impact="")
 
 
-def _check_akshare() -> CheckResult:
-    """Check akshare availability."""
-    if find_spec("akshare") is None:
+def _check_astock() -> CheckResult:
+    """Check mootdx (A-share TCP data) availability."""
+    try:
+        import mootdx  # noqa: F401
+        return CheckResult(name="astock", status="ready", message="mootdx installed", impact="")
+    except ImportError:
         return CheckResult(
-            name="akshare",
+            name="astock",
             status="skipped",
-            message="package not installed",
-            impact="A-share/forex fallback unavailable",
+            message="mootdx not installed (Tencent HTTP fallback available)",
+            impact="A-share data uses HTTP fallback only",
         )
-    return CheckResult(name="akshare", status="ready", message="installed", impact="")
 
 
 def _check_ccxt() -> CheckResult:
@@ -257,10 +252,10 @@ def run_preflight(console: Optional[Console] = None) -> List[CheckResult]:
 
     checks = [
         _check_llm_provider,
-        _check_okx,
-        _check_yfinance,
+        _check_astock,
+        _check_global_stock,
         _check_tushare,
-        _check_akshare,
+        _check_okx,
         _check_ccxt,
     ]
 

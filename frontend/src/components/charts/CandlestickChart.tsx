@@ -146,6 +146,18 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
       label: { color: "#fff", fontSize: 10, fontWeight: "bold" as const },
     }));
 
+    // Stop/profit level lines from trade markers
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stopLines: any[] = [];
+    for (const m of markers || []) {
+      if (m.stop_loss != null) {
+        stopLines.push({ yAxis: m.stop_loss, lineStyle: { color: "#ef4444", width: 1, type: "dashed" as const }, label: { formatter: `SL ${m.stop_loss}`, position: "insideEndTop" as const, fontSize: 9, color: "#ef4444" } });
+      }
+      if (m.take_profit != null) {
+        stopLines.push({ yAxis: m.take_profit, lineStyle: { color: "#22c55e", width: 1, type: "dashed" as const }, label: { formatter: `TP ${m.take_profit}`, position: "insideEndTop" as const, fontSize: 9, color: "#22c55e" } });
+      }
+    }
+
     // Volume
     const vol = data.map((d, i) => ({
       value: d.volume,
@@ -246,6 +258,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
           name: "K", type: "candlestick", data: candle, xAxisIndex: 0, yAxisIndex: 0,
           itemStyle: { color: t.upColor, color0: t.downColor, borderColor: t.upColor, borderColor0: t.downColor },
           markPoint: marks.length > 0 ? { data: marks, symbolSize: 28, tooltip: { formatter: (p: { name?: string; value?: string }) => p.name || p.value || "" } } : undefined,
+          markLine: stopLines.length > 0 ? { data: stopLines, symbol: "none", silent: true } : undefined,
         },
         ...overlaySeries,
         ...extraSeries,

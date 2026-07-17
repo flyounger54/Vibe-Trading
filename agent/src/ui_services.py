@@ -460,11 +460,13 @@ def reconstruct_price_series(run_dir: Path) -> List[Dict[str, Any]]:
     fetch_start_date = _compute_fetch_start_date(run_dir, start_date)
 
     try:
-        source = context.get("source", "tushare")
+        source = context.get("source", "astock")
         if source == "okx":
             from backtest.loaders.okx import DataLoader
-        elif source == "yfinance":
-            from backtest.loaders.yfinance_loader import DataLoader
+        elif source == "global":
+            from backtest.loaders.global_loader import DataLoader
+        elif source == "astock":
+            from backtest.loaders.astock_loader import DataLoader
         else:
             from backtest.loaders.tushare import DataLoader
         loader = DataLoader()

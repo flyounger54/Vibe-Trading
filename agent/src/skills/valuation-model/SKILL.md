@@ -258,3 +258,51 @@ Target price ¥30.8, current price ¥25.0, upside 23%
 4. **Valuation is not a target price**: markets can remain irrational for a long time, and valuation is an anchor, not a trading signal
 5. **Special handling for cyclicals**: use normalized earnings (mid-cycle earnings), not current earnings
 6. **Not suitable for cryptocurrencies**: traditional valuation frameworks do not apply to BTC / ETH; use on-chain metrics instead (see `onchain-analysis`)
+
+## 卡脖子专用估值方法
+
+以下方法适用于供应链卡脖子型公司——小市值、高增速、强定价权但盈利尚未完全释放。
+与 `supply-chain-chokepoint` Skill 配合使用。
+
+### 贝叶斯增长假说估值
+
+传统 DCF 的增长率假设是单一点估计，容易被 FOMO 情绪扭曲。贝叶斯方法将增长预期分解为 5 个互斥假说，给出各假说的概率，分离**内在增长**和**泡沫溢价**。
+
+| 假说 | 定义 | 典型营收增速 | 估值隐含 PE |
+|------|------|-------------|------------|
+| H0 — 零增长 | 需求见顶，产品被替代 | 0-5% | 8-12x |
+| H1 — 温和增长 | 行业正常增速 | 5-15% | 12-18x |
+| H2 — 快速增长 | 卡脖子红利释放，客户扩张 | 15-30% | 18-30x |
+| H3 — 超高速增长 | 新应用爆发，产能全满 | 30-60% | 30-50x |
+| H4 — 爆发式增长 | 垄断性定价权 + 行业结构性拐点 | >60% | 50x+ |
+
+**使用流程**：
+1. 根据公司当前证据（订单、产能利用率、客户验证），为每个假说分配先验概率
+2. 计算加权估值：`V = Σ P(Hi) × V(Hi)`
+3. 计算 FOMO 溢价：`FOMO = 当前市值 - V`
+4. FOMO > 30% 时标记为 `[泡沫风险]`
+
+**示例**：
+```
+某 InP 晶圆供应商：
+  P(H0)=5%, P(H1)=15%, P(H2)=40%, P(H3)=30%, P(H4)=10%
+  V(H0)=20亿, V(H1)=35亿, V(H2)=60亿, V(H3)=100亿, V(H4)=160亿
+  加权估值 = 0.05×20 + 0.15×35 + 0.40×60 + 0.30×100 + 0.10×160 = 76.25亿
+  当前市值 = 95亿
+  FOMO溢价 = (95-76.25)/76.25 = 24.6% → 在合理范围内
+```
+
+### TAM-adjusted PEG
+
+传统 PEG 对小市场高增速公司容易给出虚假的"便宜"信号。TAM-adjusted PEG 引入可触达市场天花板修正：
+
+```
+TAM_adj_PEG = PEG × (公司潜在峰值营收 / TAM)^(-0.5)
+
+当 公司潜在峰值 > TAM的30% 时，说明增长空间有限，PEG 应上调
+当 公司潜在峰值 < TAM的5% 时，说明增长空间充裕，PEG 可下调
+```
+
+**适用场景**：
+- 卡脖子公司在细分市场份额已很高（>50%），传统 PEG 显示便宜但增长空间实际有限
+- 公司正在从小 TAM 市场切入大 TAM 市场（如从数据中心 CPO → 车载光通信），PEG 不反映期权价值

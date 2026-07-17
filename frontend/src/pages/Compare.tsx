@@ -67,6 +67,11 @@ const METRICS: MetricDef[] = [
   { key: "max_consecutive_losses", label: i18n.t("compare.maxConsecLosses"),   type: "int", higherIsBetter: false },
   { key: "exposure_time",          label: i18n.t("compare.exposureTime"),        type: "pct", higherIsBetter: true },
   { key: "avg_holding_period",     label: i18n.t("compare.avgHoldingPeriod"),   type: "days", higherIsBetter: false },
+  // Position sizing metrics (shown only when data exists)
+  { key: "stop_hit_rate",          label: i18n.t("compare.stopHitRate", { defaultValue: "Stop Hit Rate" }),      type: "pct", higherIsBetter: false },
+  { key: "max_single_loss_pct",    label: i18n.t("compare.maxSingleLoss", { defaultValue: "Max Single Loss" }), type: "pct", higherIsBetter: false },
+  { key: "stop_loss_count",        label: i18n.t("compare.stopLosses", { defaultValue: "Stop Losses" }),         type: "int", higherIsBetter: false },
+  { key: "take_profit_count",      label: i18n.t("compare.takeProfits", { defaultValue: "Take Profits" }),       type: "int", higherIsBetter: true },
 ];
 
 // Also accept backend aliases

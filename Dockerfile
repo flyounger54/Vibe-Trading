@@ -39,9 +39,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps (install before copying code for layer caching)
-COPY agent/requirements.txt agent/requirements.txt
-RUN pip install --no-cache-dir -r agent/requirements.txt
+# Locked Python deps (install before copying code for layer caching).
+COPY requirements.lock requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy project
 COPY pyproject.toml LICENSE README.md ./
@@ -51,7 +51,7 @@ COPY agent/ agent/
 COPY --from=frontend-build /app/frontend/dist frontend/dist
 
 # Install CLI entrypoint
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --no-deps -e .
 
 # Runtime should not run as root. Keep writable app data directories owned by
 # the service user so named Docker volumes inherit usable permissions.

@@ -222,15 +222,22 @@ def retry_with_budget(
 # ---------------------------------------------------------------------------
 
 LOADER_CACHE_ENV = "VIBE_TRADING_DATA_CACHE"
-_LOADER_CACHE_TRUE_VALUES = {"1", "true", "yes", "on"}
+_LOADER_CACHE_FALSE_VALUES = {"0", "false", "no", "off"}
 # Bump when the key payload or on-disk layout changes so stale entries are
 # simply never matched (old files become unreachable garbage, safe to delete).
 _LOADER_CACHE_VERSION = 2
 
+# In-memory LRU cache: avoids redundant Parquet reads and network fetches
+# within the same process. Keyed by the same content-addressed hash as
+# the disk cache. Entries for settled (historical) ranges live forever;
+# intraday ranges get a 5-minute TTL.
+_MEMORY_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_MEMORY_TTL_SECONDS = 300.0
+
 
 def loader_cache_enabled() -> bool:
-    """Return whether the local market-data cache is explicitly enabled."""
-    return os.getenv(LOADER_CACHE_ENV, "").strip().lower() in _LOADER_CACHE_TRUE_VALUES
+    """Return whether the local market-data cache is enabled (default: on)."""
+    return os.getenv(LOADER_CACHE_ENV, "").strip().lower() not in _LOADER_CACHE_FALSE_VALUES
 
 
 def make_loader_cache_key(
@@ -360,33 +367,44 @@ def cached_loader_fetch(
     fields: list[str] | tuple[str, ...] | None,
     fetch: Callable[[], pd.DataFrame | None],
 ) -> pd.DataFrame | None:
-    """Fetch one DataFrame through the opt-in local cache.
+    """Fetch one DataFrame through the three-tier cache.
 
-    Convenience wrapper over :func:`loader_cache_get` / :func:`loader_cache_put`
-    for the common per-symbol loader loop: return the cached frame when present,
-    otherwise call ``fetch`` and cache a non-empty result. Cache read/write
-    failures are non-fatal and fall back to ``fetch``.
+    Cache chain: in-memory dict → Parquet on disk → live network fetch.
+    Historical data (end_date < today) is persisted to both layers;
+    intraday data uses only the memory layer with a 5-minute TTL.
     """
+    cache_key = make_loader_cache_key(
+        source=source, symbol=symbol, timeframe=timeframe,
+        start_date=start_date, end_date=end_date, fields=fields,
+    )
+
+    # L1: in-memory cache
+    mem_entry = _MEMORY_CACHE.get(cache_key)
+    if mem_entry is not None:
+        stored_at, df = mem_entry
+        is_settled = loader_cache_range_is_final(end_date)
+        if is_settled or (time.monotonic() - stored_at < _MEMORY_TTL_SECONDS):
+            return df
+
+    # L2: Parquet disk cache
     cached = loader_cache_get(
-        source=source,
-        symbol=symbol,
-        timeframe=timeframe,
-        start_date=start_date,
-        end_date=end_date,
-        fields=fields,
+        source=source, symbol=symbol, timeframe=timeframe,
+        start_date=start_date, end_date=end_date, fields=fields,
     )
     if cached is not None:
+        _MEMORY_CACHE[cache_key] = (time.monotonic(), cached)
         return cached
 
+    # L3: live fetch
     frame = fetch()
+
+    if isinstance(frame, pd.DataFrame) and not frame.empty:
+        _MEMORY_CACHE[cache_key] = (time.monotonic(), frame)
+
     loader_cache_put(
-        source=source,
-        symbol=symbol,
-        timeframe=timeframe,
-        start_date=start_date,
-        end_date=end_date,
-        fields=fields,
-        frame=frame,
+        source=source, symbol=symbol, timeframe=timeframe,
+        start_date=start_date, end_date=end_date,
+        fields=fields, frame=frame,
     )
     return frame
 

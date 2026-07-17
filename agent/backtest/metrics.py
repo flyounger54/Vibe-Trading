@@ -19,15 +19,15 @@ from backtest.models import TradeRecord
 # sessions are marginally longer (~330 min) — an approximation in line with the
 # rest of this annualisation table; the key fix is that intraday mootdx/futu no
 # longer fall back to the bars_per_day=1 default, which mis-annualised vol/Sharpe.
-_TRADING_DAYS = {"tushare": 252, "yfinance": 252, "okx": 365, "akshare": 252, "ccxt": 365, "mootdx": 252, "futu": 252}
+_TRADING_DAYS = {"astock": 252, "global": 252, "tushare": 252, "okx": 365, "ccxt": 365, "local": 252}
 _BARS_PER_DAY = {
-    "1m":  {"tushare": 240, "okx": 1440, "yfinance": 390, "akshare": 240, "ccxt": 1440, "mootdx": 240, "futu": 240},
-    "5m":  {"tushare": 48,  "okx": 288,  "yfinance": 78,  "akshare": 48,  "ccxt": 288,  "mootdx": 48,  "futu": 48},
-    "15m": {"tushare": 16,  "okx": 96,   "yfinance": 26,  "akshare": 16,  "ccxt": 96,   "mootdx": 16,  "futu": 16},
-    "30m": {"tushare": 8,   "okx": 48,   "yfinance": 13,  "akshare": 8,   "ccxt": 48,   "mootdx": 8,   "futu": 8},
-    "1H":  {"tushare": 4,   "okx": 24,   "yfinance": 7,   "akshare": 4,   "ccxt": 24,   "mootdx": 4,   "futu": 4},
-    "4H":  {"tushare": 1,   "okx": 6,    "yfinance": 2,   "akshare": 1,   "ccxt": 6,    "mootdx": 1,   "futu": 1},
-    "1D":  {"tushare": 1,   "okx": 1,    "yfinance": 1,   "akshare": 1,   "ccxt": 1,    "mootdx": 1,   "futu": 1},
+    "1m":  {"astock": 240, "global": 390, "tushare": 240, "okx": 1440, "ccxt": 1440, "local": 240},
+    "5m":  {"astock": 48,  "global": 78,  "tushare": 48,  "okx": 288,  "ccxt": 288,  "local": 48},
+    "15m": {"astock": 16,  "global": 26,  "tushare": 16,  "okx": 96,   "ccxt": 96,   "local": 16},
+    "30m": {"astock": 8,   "global": 13,  "tushare": 8,   "okx": 48,   "ccxt": 48,   "local": 8},
+    "1H":  {"astock": 4,   "global": 7,   "tushare": 4,   "okx": 24,   "ccxt": 24,   "local": 4},
+    "4H":  {"astock": 1,   "global": 2,   "tushare": 1,   "okx": 6,    "ccxt": 6,    "local": 1},
+    "1D":  {"astock": 1,   "global": 1,   "tushare": 1,   "okx": 1,    "ccxt": 1,    "local": 1},
 }
 
 
@@ -214,7 +214,7 @@ def calc_metrics(
         active_std = float(active_ret.std())
         ir = float(active_ret.mean() / (active_std + 1e-10) * np.sqrt(bpy))
 
-    return {
+    m = {
         "final_value": float(equity_curve.iloc[-1]),
         "total_return": total_ret,
         "annual_return": ann_ret,
@@ -232,6 +232,49 @@ def calc_metrics(
         "excess_return": round(excess, 6),
         "information_ratio": round(ir, 4),
     }
+    m.update(_sizing_metrics(trades, equity_curve, initial_cash))
+    return m
+
+
+_STOP_REASONS = {"stop_loss", "trailing_stop", "take_profit", "time_exit", "partial_close"}
+
+
+def _sizing_metrics(
+    trades: List[TradeRecord],
+    equity_curve: pd.Series,
+    initial_cash: float,
+) -> Dict[str, Any]:
+    """Compute position-sizing-specific metrics (no-op when no stops fired)."""
+    if not trades:
+        return {}
+
+    reason_counts: Dict[str, int] = {}
+    for t in trades:
+        if t.exit_reason in _STOP_REASONS:
+            reason_counts[t.exit_reason] = reason_counts.get(t.exit_reason, 0) + 1
+
+    if not reason_counts:
+        return {}
+
+    total_exits = len([t for t in trades if t.exit_reason != "end_of_backtest"])
+    stop_exits = sum(reason_counts.values())
+
+    # Max single-trade loss as fraction of equity at the time
+    worst_pct = 0.0
+    for t in trades:
+        if t.pnl < 0 and initial_cash > 0:
+            loss_frac = t.pnl / initial_cash
+            worst_pct = min(worst_pct, loss_frac)
+
+    result: Dict[str, Any] = {
+        "stop_hit_rate": round(stop_exits / max(total_exits, 1), 4),
+        "max_single_loss_pct": round(worst_pct, 4),
+    }
+    for reason in ("stop_loss", "trailing_stop", "take_profit", "time_exit", "partial_close"):
+        if reason in reason_counts:
+            result[f"{reason}_count"] = reason_counts[reason]
+
+    return result
 
 
 def _empty_metrics(initial_cash: float) -> Dict[str, Any]:

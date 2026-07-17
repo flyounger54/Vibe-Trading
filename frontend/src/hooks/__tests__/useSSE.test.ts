@@ -21,6 +21,14 @@ class MockEventSource {
     this.listeners.get(type)!.push(handler);
   }
 
+  removeEventListener(type: string, handler: ESHandler) {
+    const handlers = this.listeners.get(type);
+    if (handlers) {
+      const idx = handlers.indexOf(handler);
+      if (idx >= 0) handlers.splice(idx, 1);
+    }
+  }
+
   /** Test helper: simulate an event from the server */
   emit(type: string, data: unknown, lastEventId?: string) {
     const event = new MessageEvent(type, { data: JSON.stringify(data) });

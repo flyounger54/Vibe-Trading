@@ -16,6 +16,14 @@ const METRIC_LABELS_EN: Record<string, string> = {
   benchmark_return: "Benchmark",
   excess_return: "Excess Return",
   information_ratio: "IR",
+  // Position sizing metrics
+  stop_hit_rate: "Stop Hit Rate",
+  stop_loss_count: "Stop Losses",
+  trailing_stop_count: "Trail Stops",
+  take_profit_count: "Take Profits",
+  time_exit_count: "Time Exits",
+  partial_close_count: "Partial Closes",
+  max_single_loss_pct: "Max Single Loss",
 };
 
 const METRIC_LABELS_ZH: Record<string, string> = {
@@ -34,6 +42,14 @@ const METRIC_LABELS_ZH: Record<string, string> = {
   benchmark_return: "基准收益",
   excess_return: "超额收益",
   information_ratio: "IR",
+  // 仓位管理指标
+  stop_hit_rate: "止损命中率",
+  stop_loss_count: "止损次数",
+  trailing_stop_count: "移动止损次数",
+  take_profit_count: "止盈次数",
+  time_exit_count: "时间退出次数",
+  partial_close_count: "部分平仓次数",
+  max_single_loss_pct: "最大单笔亏损",
 };
 
 // Canonical metric key set (English labels). Kept exported so consumers and
@@ -46,10 +62,10 @@ export function getMetricLabel(k: string): string {
   return METRIC_LABELS_EN[k] || k;
 }
 
-const PCT_KEYS = ["total_return", "annual_return", "win_rate", "max_drawdown", "benchmark_return", "excess_return"];
+const PCT_KEYS = ["total_return", "annual_return", "win_rate", "max_drawdown", "benchmark_return", "excess_return", "stop_hit_rate", "max_single_loss_pct"];
 const RATIO_KEYS = ["sharpe", "calmar", "sortino", "profit_loss_ratio", "information_ratio"];
-const INT_KEYS = ["trade_count", "max_consecutive_loss"];
-const NEUTRAL_KEYS = new Set(["trade_count", "avg_holding_days", "final_value"]);
+const INT_KEYS = ["trade_count", "max_consecutive_loss", "stop_loss_count", "trailing_stop_count", "take_profit_count", "time_exit_count", "partial_close_count"];
+const NEUTRAL_KEYS = new Set(["trade_count", "avg_holding_days", "final_value", "stop_loss_count", "trailing_stop_count", "take_profit_count", "time_exit_count", "partial_close_count"]);
 
 export function formatMetricVal(k: string, v: number): string {
   if (PCT_KEYS.includes(k)) {
@@ -73,6 +89,8 @@ export function metricSentiment(k: string, v: number): "positive" | "neutral" | 
   if (k === "win_rate") return v >= 0.5 ? "positive" : v >= 0.35 ? "neutral" : "negative";
   if (k === "sharpe" || k === "calmar" || k === "sortino") return v >= 1.0 ? "positive" : v >= 0.3 ? "neutral" : "negative";
   if (k === "information_ratio") return v >= 0.5 ? "positive" : v >= 0 ? "neutral" : "negative";
+  if (k === "stop_hit_rate") return v <= 0.1 ? "positive" : v <= 0.3 ? "neutral" : "negative";
+  if (k === "max_single_loss_pct") return v > -0.02 ? "positive" : v > -0.05 ? "neutral" : "negative";
   return v > 0 ? "positive" : v === 0 ? "neutral" : "negative";
 }
 
@@ -80,6 +98,9 @@ export const DISPLAY_ORDER = [
   "total_return", "annual_return", "sharpe", "max_drawdown", "win_rate", "trade_count",
   "calmar", "sortino", "profit_loss_ratio", "max_consecutive_loss",
   "benchmark_return", "excess_return", "information_ratio", "final_value", "avg_holding_days",
+  // Position sizing (shown only when present in metrics)
+  "stop_hit_rate", "max_single_loss_pct",
+  "stop_loss_count", "trailing_stop_count", "take_profit_count", "time_exit_count", "partial_close_count",
 ];
 
 export function formatTimestamp(ts: number): string {

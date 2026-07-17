@@ -66,8 +66,25 @@ export function useSSE(config?: SSEConfig) {
     return baseUrl;
   }, []);
 
+  const listenersRef = useRef<Array<[string, EventListener]>>([]);
+
+  const cleanupSource = useCallback((source: EventSource) => {
+    for (const [type, fn] of listenersRef.current) {
+      source.removeEventListener(type, fn);
+    }
+    listenersRef.current = [];
+    source.onopen = null;
+    source.onerror = null;
+    source.close();
+  }, []);
+
   const doConnect = useCallback(() => {
     if (closedRef.current) return;
+
+    if (sourceRef.current) {
+      cleanupSource(sourceRef.current);
+      sourceRef.current = null;
+    }
 
     const url = buildUrl(urlRef.current);
     const source = new EventSource(url);
@@ -78,7 +95,6 @@ export function useSSE(config?: SSEConfig) {
       setStatus("connected");
     };
 
-    // Only subscribe to event types the backend actually emits
     const knownTypes = [
       "text_delta", "reasoning_delta", "stream_reset", "thinking_done", "tool_call", "tool_result", "compact",
       "tool_heartbeat", "tool_progress", "llm_usage",
@@ -107,17 +123,21 @@ export function useSSE(config?: SSEConfig) {
       handler?.(parsed);
     };
 
+    const listeners: Array<[string, EventListener]> = [];
     for (const eventType of knownTypes) {
-      source.addEventListener(eventType, (e) => handleRaw(eventType, e as MessageEvent));
+      const fn = (e: Event) => handleRaw(eventType, e as MessageEvent);
+      source.addEventListener(eventType, fn);
+      listeners.push([eventType, fn]);
     }
+    listenersRef.current = listeners;
 
     source.onerror = () => {
       if (closedRef.current) return;
-      source.close();
+      cleanupSource(source);
       sourceRef.current = null;
       scheduleReconnect();
     };
-  }, [buildUrl, trackEventId, setStatus]);
+  }, [buildUrl, cleanupSource, trackEventId, setStatus]);
 
   const scheduleReconnect = useCallback(() => {
     if (closedRef.current) return;
@@ -137,7 +157,10 @@ export function useSSE(config?: SSEConfig) {
 
   const connect = useCallback((url: string, handlers: Handlers) => {
     closedRef.current = true;
-    sourceRef.current?.close();
+    if (sourceRef.current) {
+      cleanupSource(sourceRef.current);
+      sourceRef.current = null;
+    }
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -152,7 +175,7 @@ export function useSSE(config?: SSEConfig) {
     seenOrderRef.current.length = 0;
 
     doConnect();
-  }, [doConnect]);
+  }, [cleanupSource, doConnect]);
 
   const disconnect = useCallback(() => {
     closedRef.current = true;
@@ -160,10 +183,12 @@ export function useSSE(config?: SSEConfig) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
     }
-    sourceRef.current?.close();
-    sourceRef.current = null;
+    if (sourceRef.current) {
+      cleanupSource(sourceRef.current);
+      sourceRef.current = null;
+    }
     setStatus("disconnected");
-  }, [setStatus]);
+  }, [cleanupSource, setStatus]);
 
   const getStatus = useCallback(() => statusRef.current, []);
 
