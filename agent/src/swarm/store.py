@@ -1,6 +1,7 @@
 """Swarm multi-agent system — run state persistence.
 
-File-system-based persistence for SwarmRun. Directory structure:
+Canonical ``SwarmRun`` snapshots are written to unified SQLite. Large and
+append-only payloads remain in the run directory for efficient streaming:
     .swarm/runs/{run_id}/
     ├── run.json         # SwarmRun state (atomic write)
     ├── events.jsonl     # append-only event log
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from src.swarm.models import SwarmEvent, SwarmRun
 from src.tools.redaction import redact_internal_paths
+from src.state.database import StateDatabase, default_state_db_path
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -112,7 +114,7 @@ def _replace_with_retry(tmp: Path, target: Path) -> None:
 
 
 class SwarmStore:
-    """File-based persistence store for SwarmRun.
+    """SQLite-backed run state with filesystem task and artifact payloads.
 
     Each run is stored under base_dir/{run_id}/. run.json uses atomic writes
     (write to .tmp then rename) to prevent corruption. events.jsonl is append-only
@@ -122,14 +124,18 @@ class SwarmStore:
         base_dir: Storage root directory, typically agent/.swarm/runs.
     """
 
-    def __init__(self, base_dir: Path) -> None:
+    def __init__(self, base_dir: Path, *, database_path: Path | None = None) -> None:
         """Initialize SwarmStore.
 
         Args:
             base_dir: Storage root directory path.
         """
         self.base_dir = base_dir
+        self.base_dir.mkdir(parents=True, exist_ok=True)
         self._write_lock = threading.Lock()
+        if database_path is None and self.base_dir.resolve() == swarm_runs_root().resolve():
+            database_path = default_state_db_path()
+        self.database = StateDatabase(database_path or self.base_dir / "state.db")
 
     def run_dir(self, run_id: str) -> Path:
         """Return the directory path for a given run.
@@ -173,6 +179,7 @@ class SwarmStore:
         (rd / "inboxes").mkdir()
         (rd / "artifacts").mkdir()
         self._atomic_write(rd / "run.json", run.model_dump_json(indent=2))
+        self.database.upsert_record("swarm_run", run.id, run.model_dump(mode="json"))
         return rd
 
     def load_run(self, run_id: str) -> SwarmRun | None:
@@ -186,7 +193,8 @@ class SwarmStore:
         """
         run_file = self.run_dir(run_id) / "run.json"
         if not run_file.exists():
-            return None
+            record = self.database.get_record("swarm_run", run_id)
+            return SwarmRun.model_validate(record[0]) if record is not None else None
         # The file may be read mid-replace by a concurrent writer; retry a
         # transient read/parse failure before giving up (same race as
         # _replace_with_retry, reader side).
@@ -214,6 +222,7 @@ class SwarmStore:
         if not rd.exists():
             raise FileNotFoundError(f"Run directory not found: {rd.name}")
         self._atomic_write(rd / "run.json", run.model_dump_json(indent=2))
+        self.database.upsert_record("swarm_run", run.id, run.model_dump(mode="json"))
 
     def list_runs(self, limit: int = 50) -> list[SwarmRun]:
         """List all runs sorted by created_at descending.
@@ -239,6 +248,11 @@ class SwarmStore:
                 except (json.JSONDecodeError, ValueError):
                     continue
 
+        runs.sort(key=lambda r: r.created_at, reverse=True)
+        known_ids = {run.id for run in runs}
+        for run_id, payload, _version in self.database.list_records("swarm_run", limit=limit):
+            if run_id not in known_ids:
+                runs.append(SwarmRun.model_validate(payload))
         runs.sort(key=lambda r: r.created_at, reverse=True)
         return runs[:limit]
 

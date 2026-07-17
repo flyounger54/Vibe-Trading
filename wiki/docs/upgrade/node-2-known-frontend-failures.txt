@@ -1,0 +1,1 @@
+# Node 2 accepted baseline: no known frontend test failures.

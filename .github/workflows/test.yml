@@ -43,7 +43,8 @@ jobs:
         # (real-LLM only); list --ignore here so CI's intent is explicit and
         # the suite never silently switches state on env presence.
         run: |
-          python scripts/check_node0_collection.py wiki/docs/upgrade/node-1-known-collection-errors.txt 4302
+          python scripts/check_node0_collection.py wiki/docs/upgrade/node-2-known-collection-errors.txt 4326
+          python scripts/generate-api-contracts --check
           pytest --ignore=agent/tests/e2e_backtest --ignore=agent/tests/test_e2e_harness_v2.py --cov=agent --cov-report=term-missing --cov-report=xml --tb=short -q
 
   frontend:

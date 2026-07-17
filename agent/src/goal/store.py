@@ -28,9 +28,9 @@ from src.goal.models import (
     StaleGoalError,
 )
 from src.goal.policy import normalize_required_text, reject_live_execution_objective
+from src.state.database import default_state_db_path
 from src.tools.path_utils import safe_document_path, safe_run_id
 
-_DEFAULT_DB_PATH = Path.home() / ".vibe-trading" / "sessions.db"
 _DB_PATH_ENV = "VIBE_TRADING_GOAL_DB_PATH"
 
 _CURRENT_STATUSES = {
@@ -73,7 +73,7 @@ def _default_db_path() -> Path:
     raw_path = os.getenv(_DB_PATH_ENV, "").strip()
     if raw_path:
         return Path(raw_path).expanduser()
-    return _DEFAULT_DB_PATH
+    return default_state_db_path()
 
 
 def _to_json_dict(value: object) -> dict:

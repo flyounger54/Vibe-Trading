@@ -146,7 +146,9 @@ def _probe_skill_count() -> int:
 
 def _probe_session_count() -> int:
     """Count recorded sessions from the SQLite store."""
-    db_path = Path.home() / ".vibe-trading" / "sessions.db"
+    from src.state import default_state_db_path
+
+    db_path = default_state_db_path()
     if not db_path.exists():
         return 0
     try:
@@ -336,8 +338,9 @@ def _session_store() -> Any:
     if _SESSION_STORE_CACHE is None:
         from cli._legacy import SESSIONS_DIR  # filesystem path constant
         from src.session.store import SessionStore
+        from src.state import default_state_db_path
 
-        _SESSION_STORE_CACHE = SessionStore(base_dir=SESSIONS_DIR)
+        _SESSION_STORE_CACHE = SessionStore(base_dir=SESSIONS_DIR, db_path=default_state_db_path())
     return _SESSION_STORE_CACHE
 
 
@@ -362,8 +365,8 @@ def _build_session_history(store: Any, session_id: str) -> list[dict]:
 def _new_session(prompt_preview: str) -> Optional[str]:
     """Create a fresh session record. Returns the id, or None on failure.
 
-    Dual-writes to the filesystem :class:`SessionStore` (canonical JSONL
-    log under ``agent/sessions/``) *and* to the SQLite FTS5 search index
+    Writes canonical state through :class:`SessionStore` into the unified
+    SQLite WAL database and projects text into the separate FTS5 search index
     (``~/.vibe-trading/sessions.db``) so cross-session search via
     :class:`SessionSearchIndex` finds turns recorded from the interactive
     loop. Matches the pattern in :class:`SessionService`.
@@ -393,13 +396,12 @@ def _new_session(prompt_preview: str) -> Optional[str]:
 
 
 def _append_message(session_id: str, role: str, content: str) -> None:
-    """Append a single message to the session JSONL log + FTS5 index.
+    """Append one message to canonical SQLite state and the FTS5 projection.
 
     Dual-writes:
 
-    * Canonical: append the :class:`Message` to ``messages.jsonl`` via
-      the filesystem :class:`SessionStore`. ``_maybe_resume_last_session``
-      and the legacy ``sessions`` CLI both read from here.
+    * Canonical: append the :class:`Message` through :class:`SessionStore`
+      into ``state/vibe.db``. Resume and legacy CLI commands read it here.
     * Search index: insert the same row into the SQLite FTS5 index so
       ``SessionSearchTool`` finds it. Required for the CLAUDE.md promise
       that cross-session full-text search works.
@@ -421,7 +423,7 @@ def _append_message(session_id: str, role: str, content: str) -> None:
     except Exception:  # noqa: BLE001 — persistence is best-effort
         pass
 
-    # FTS5 cross-session search. Independent try/except so a JSONL write
+    # FTS5 cross-session search. Independent try/except so a canonical write
     # that succeeded is not retried just because the search index failed.
     try:
         from src.session.search import get_shared_index

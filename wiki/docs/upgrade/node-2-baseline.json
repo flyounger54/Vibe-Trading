@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-17T11:45:00+08:00",
+  "repository": "/Users/flyounger54/Desktop/quant-system/Vibe-Trading",
+  "branch": "upgrade/node-2-contract-state-boundaries",
+  "starting_head": "c278447e1619f1d59209f9dcbe69fdc4d0b90a56",
+  "starting_tag": "upgrade-node-1-accepted",
+  "status": "accepted",
+  "accepted_at": "2026-07-17T12:01:38+08:00",
+  "contracts": {
+    "openapi_paths": 132,
+    "v1_paths": 66,
+    "legacy_paths": 66,
+    "component_schemas": 59,
+    "generated_artifacts": [
+      "frontend/src/generated/openapi.json",
+      "frontend/src/generated/api-types.ts",
+      "frontend/src/generated/api-client.ts"
+    ],
+    "api_cli_mcp_goal_parity": "pass",
+    "stable_error_codes": "pass"
+  },
+  "state": {
+    "database": "~/.vibe-trading/state/vibe.db",
+    "journal_mode": "wal",
+    "schema_version": 1,
+    "covered_records": [
+      "session",
+      "message",
+      "attempt",
+      "event_cursor",
+      "job",
+      "swarm_run",
+      "schedule",
+      "migration_version"
+    ],
+    "optimistic_concurrency": "pass",
+    "persistent_event_replay": "pass"
+  },
+  "migration": {
+    "final_manifest": "/Users/flyounger54/.vibe-trading/upgrade-backups/state-migration-20260717T033728Z/manifest.json",
+    "sessions": 17,
+    "messages": 19,
+    "attempts": 13,
+    "schedules": 0,
+    "swarm_runs": 17,
+    "session_sha256": "e32b0c7982ddec95ae5775f19331a2531337bff536510afec7f8df72926efa1e",
+    "swarm_sha256": "0b83a1dababab0eb997cbe8a9db2f1bedd813f6dd7388087096ff2aebc333cf3",
+    "source_untouched": true,
+    "rollback_reimport_verified": true
+  },
+  "tests": {
+    "backend_collection": 4326,
+    "backend_python_3_11": {
+      "passed": 4324,
+      "skipped": 2,
+      "failed": 0,
+      "warnings": 14,
+      "duration_seconds": 180.81
+    },
+    "backend_python_3_12": {
+      "passed": 4324,
+      "skipped": 2,
+      "failed": 0,
+      "warnings": 13,
+      "duration_seconds": 191.38
+    },
+    "frontend": {
+      "test_files": 27,
+      "tests": 227,
+      "passed": 227,
+      "failed": 0,
+      "build": "pass",
+      "modules_transformed": 2753
+    },
+    "real_state_unchanged_during_acceptance": true
+  },
+  "acceptance": {
+    "user_accepted": true,
+    "command": "VIBE_PYTHON=<python-3.11-or-3.12> scripts/node2-acceptance --full",
+    "python_3_11_exit_code": 0,
+    "python_3_12_exit_code": 0,
+    "known_collection_errors": 0,
+    "known_frontend_failures": 0
+  }
+}

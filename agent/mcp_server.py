@@ -53,6 +53,8 @@ AGENT_DIR = Path(__file__).resolve().parent
 if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
+from src.contracts.errors import ContractError, ErrorCode
+
 from fastmcp import Context, FastMCP
 from cli._version import __version__ as APP_VERSION
 from src.market_data import (
@@ -246,23 +248,26 @@ def start_research_goal(
         time_budget_seconds: Optional wall-clock budget.
     """
     try:
-        clean_criteria = _clean_list(criteria) or _default_goal_criteria()
-        goal = _get_goal_store().replace_goal(
-            session_id=session_id.strip(),
-            objective=objective,
-            criteria=clean_criteria,
-            ui_summary=ui_summary,
+        from src.contracts.goals import CreateGoalRequest, GoalApplicationService
+
+        snapshot = GoalApplicationService(_get_goal_store()).create(
+            session_id=session_id,
+            request=CreateGoalRequest(
+                objective=objective,
+                criteria=criteria or [],
+                ui_summary=ui_summary,
+                protocol=protocol,
+                risk_tier=risk_tier,
+                token_budget=token_budget,
+                turn_budget=turn_budget,
+                time_budget_seconds=time_budget_seconds,
+            ),
             source="mcp",
-            protocol=protocol,
-            risk_tier=_risk_tier_from_text(risk_tier),
-            token_budget=token_budget,
-            turn_budget=turn_budget,
-            time_budget_seconds=time_budget_seconds,
         )
-        snapshot = _get_goal_store().get_goal_snapshot(goal.goal_id)
         return _json_ok(snapshot=snapshot)
-    except ValueError as exc:
-        return _json_error(str(exc), error_type="validation")
+    except (ContractError, ValueError) as exc:
+        code = exc.code.value if isinstance(exc, ContractError) else ErrorCode.INVALID_ARGUMENT.value
+        return _json_error(str(exc), error_type=code)
 
 
 @mcp.tool

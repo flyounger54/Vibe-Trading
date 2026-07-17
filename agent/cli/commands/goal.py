@@ -13,7 +13,8 @@ from rich.table import Table
 from rich.text import Text
 
 from cli.theme import get_console
-from src.goal.context import default_goal_criteria
+from src.contracts.errors import ContractError
+from src.contracts.goals import CreateGoalRequest, GoalApplicationService
 
 _goal_store = None
 
@@ -33,11 +34,6 @@ def _get_goal_store():
     return _goal_store
 
 
-def _default_criteria() -> list[str]:
-    """Return the MVP finance protocol checklist."""
-    return default_goal_criteria()
-
-
 def _criterion_is_covered(criterion: dict, evidence: list[dict]) -> bool:
     """Return whether a criterion has completion status or attached evidence."""
     status = str(criterion.get("status") or "").lower()
@@ -54,12 +50,13 @@ def _create_cli_session(ctx: Any, title: str) -> str | None:
         from src.session.models import Session, SessionStatus
         from src.session.search import get_shared_index
         from src.session.store import SessionStore
+        from src.state import default_state_db_path
 
         session = Session(
             title=(title[:60] or "Goal research"),
             status=SessionStatus.ACTIVE,
         )
-        SessionStore(base_dir=SESSIONS_DIR).create_session(session)
+        SessionStore(base_dir=SESSIONS_DIR, db_path=default_state_db_path()).create_session(session)
         get_shared_index().index_session(session.session_id, session.title)
         if ctx is not None:
             setattr(ctx, "session_id", session.session_id)
@@ -175,19 +172,13 @@ def cmd_start(ctx: Any = None, *args: str) -> int:
         _resolve_console().print(Text("Could not create or resolve a session for /goal.", style="bold red"))
         return 1
     try:
-        goal = _get_goal_store().replace_goal(
+        snapshot = GoalApplicationService(_get_goal_store()).create(
             session_id=session_id,
-            objective=objective,
-            criteria=_default_criteria(),
+            request=CreateGoalRequest(objective=objective),
             source="cli",
-            protocol="thesis_review",
         )
-    except ValueError as exc:
-        _resolve_console().print(Text(f"/goal failed: {exc}", style="bold red"))
-        return 1
-    snapshot = _get_goal_store().get_goal_snapshot(goal.goal_id)
-    if snapshot is None:
-        _resolve_console().print(Text("Goal created but could not be reloaded.", style="bold red"))
+    except ContractError as exc:
+        _resolve_console().print(Text(f"/goal failed [{exc.code.value}]: {exc}", style="bold red"))
         return 1
     _render_snapshot(snapshot, title="/goal started")
     return 0

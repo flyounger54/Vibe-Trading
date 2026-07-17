@@ -1,8 +1,7 @@
 """SQLite FTS5 session search index for cross-session full-text search.
 
-Stores an inverted index of all conversation messages. The primary data
-remains in the file-based SessionStore; this module provides a fast search
-layer on top.
+Stores a rebuildable inverted index of conversation messages. Canonical state
+lives in the unified SQLite database; this module is only a search projection.
 
 Database location: ~/.vibe-trading/sessions.db (WAL mode for concurrent reads).
 """
@@ -60,7 +59,7 @@ class SessionSearchIndex:
     Supports:
         - Indexing individual messages as they arrive
         - Full-text search with relevance ranking
-        - Bulk reindex from the file-based SessionStore
+        - One-time bulk reindex from legacy JSON/JSONL session folders
     """
 
     def __init__(self, db_path: Path = _DB_PATH) -> None:
@@ -264,7 +263,7 @@ class SessionSearchIndex:
         return list(seen.values())
 
     def reindex_from_store(self, store_base_dir: Path) -> int:
-        """Rebuild the entire index from file-based session store.
+        """Rebuild the index from legacy JSON/JSONL session folders.
 
         Args:
             store_base_dir: Root directory of the SessionStore (contains session subdirs).

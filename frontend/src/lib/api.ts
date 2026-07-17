@@ -1,6 +1,24 @@
 import { authHeaders, withAuthQuery } from "@/lib/apiAuth";
+import type {
+  AddGoalEvidenceRequest as GeneratedAddGoalEvidenceRequest,
+  AddGoalEvidenceResponse as GeneratedAddGoalEvidenceResponse,
+  CreateGoalRequest as GeneratedCreateGoalRequest,
+  GoalClaimResponse as GeneratedGoalClaim,
+  GoalCriterionResponse as GeneratedGoalCriterion,
+  GoalEvidenceResponse as GeneratedGoalEvidence,
+  GoalRecordResponse as GeneratedGoalRecord,
+  GoalSnapshotResponse as GeneratedGoalSnapshot,
+  GoalStatus as GeneratedGoalStatus,
+  MessageResponse as GeneratedMessageResponse,
+  RiskTier as GeneratedGoalRiskTier,
+  SessionResponse as GeneratedSessionResponse,
+  UpdateGoalRequest as GeneratedUpdateGoalRequest,
+  UpdateGoalResponse as GeneratedUpdateGoalResponse,
+  UpdateGoalStatusRequest as GeneratedUpdateGoalStatusRequest,
+  UpdateGoalStatusResponse as GeneratedUpdateGoalStatusResponse,
+} from "@/generated/api-types";
 
-const BASE = "";
+const BASE = "/api/v1";
 
 export class ApiError extends Error {
   status: number;
@@ -619,192 +637,24 @@ export interface PineScriptResult {
   content: string | null;
 }
 
-export interface SessionItem {
-  session_id: string;
-  title?: string;
-  status?: string;
-  created_at?: string;
-  updated_at?: string;
-  last_attempt_id?: string;
-}
+export type SessionItem = GeneratedSessionResponse;
 
 // --- Goal types ---
 
-export type GoalStatus =
-  | "active"
-  | "paused"
-  | "waiting_user"
-  | "needs_refresh"
-  | "insufficient_evidence"
-  | "compliance_blocked"
-  | "blocked"
-  | "budget_limited"
-  | "usage_limited"
-  | "complete"
-  | "cancelled"
-  | "superseded";
-
-export type GoalRiskTier =
-  | "research_general"
-  | "market_specific_short_term"
-  | "personalized_advice_or_position_sizing";
-
-export interface GoalRecord {
-  goal_id: string;
-  session_id: string;
-  status: GoalStatus;
-  objective: string;
-  ui_summary: string;
-  source: string;
-  protocol: string;
-  risk_tier: GoalRiskTier;
-  token_budget?: number | null;
-  tokens_used: number;
-  turn_budget?: number | null;
-  turns_used: number;
-  time_budget_seconds?: number | null;
-  time_used_seconds: number;
-  budget_wrapup_sent: boolean;
-  created_at: string;
-  updated_at: string;
-  completed_at?: string | null;
-  recap?: string | null;
-}
-
-export interface GoalClaim {
-  claim_id: string;
-  goal_id: string;
-  session_id: string;
-  claim_type: string;
-  text: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GoalCriterion {
-  criterion_id: string;
-  goal_id: string;
-  session_id: string;
-  text: string;
-  required: boolean;
-  status: string;
-  freshness_requirement?: string | null;
-  protocol_step?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GoalEvidence {
-  evidence_id: string;
-  goal_id: string;
-  session_id: string;
-  text: string;
-  criterion_id?: string | null;
-  claim_id?: string | null;
-  evidence_type: string;
-  tool_call_id?: string | null;
-  run_id?: string | null;
-  source_provider?: string | null;
-  source_type?: string | null;
-  source_uri?: string | null;
-  symbol_universe: string[];
-  benchmark: string[];
-  timeframe?: string | null;
-  method?: string | null;
-  assumptions: Record<string, unknown>;
-  artifact_path?: string | null;
-  artifact_hash?: string | null;
-  retrieved_at: string;
-  data_as_of?: string | null;
-  freshness_status: string;
-  verification_status: string;
-  confidence?: string | null;
-  caveat?: string | null;
-  contradicts_claim_ids: string[];
-  created_at: string;
-}
-
-export interface GoalSnapshot {
-  goal: GoalRecord;
-  claims: GoalClaim[];
-  criteria: GoalCriterion[];
-  evidence: GoalEvidence[];
-  evidence_count: number;
-}
-
-export interface CreateGoalRequest {
-  objective: string;
-  criteria?: string[];
-  ui_summary?: string;
-  protocol?: string;
-  risk_tier?: GoalRiskTier;
-  token_budget?: number;
-  turn_budget?: number;
-  time_budget_seconds?: number;
-}
-
-export interface AddGoalEvidenceRequest {
-  goal_id: string;
-  expected_goal_id: string;
-  text: string;
-  criterion_id?: string | null;
-  claim_id?: string | null;
-  evidence_type?: string;
-  tool_call_id?: string | null;
-  run_id?: string | null;
-  source_provider?: string | null;
-  source_type?: string | null;
-  source_uri?: string | null;
-  symbol_universe?: string[];
-  benchmark?: string[];
-  timeframe?: string | null;
-  method?: string | null;
-  assumptions?: Record<string, unknown>;
-  artifact_path?: string | null;
-  artifact_hash?: string | null;
-  data_as_of?: string | null;
-  confidence?: string | null;
-  caveat?: string | null;
-  contradicts_claim_ids?: string[];
-}
-
-export interface UpdateGoalRequest {
-  goal_id: string;
-  expected_goal_id: string;
-  objective?: string;
-  ui_summary?: string;
-}
-
-export interface UpdateGoalResponse {
-  goal: GoalRecord;
-  snapshot: GoalSnapshot;
-}
-
-export interface AddGoalEvidenceResponse {
-  evidence: GoalEvidence;
-  snapshot: GoalSnapshot;
-}
-
-export interface GoalAuditRowRequest {
-  criterion_id: string;
-  result: string;
-  evidence_ids?: string[];
-  notes?: string;
-}
-
-export interface UpdateGoalStatusRequest {
-  goal_id: string;
-  expected_goal_id: string;
-  status: GoalStatus;
-  audit?: GoalAuditRowRequest[];
-  recap?: string | null;
-}
-
-export interface UpdateGoalStatusResponse {
-  goal: GoalRecord;
-  snapshot: GoalSnapshot;
-}
+export type GoalStatus = GeneratedGoalStatus;
+export type GoalRiskTier = Exclude<GeneratedGoalRiskTier, "live_trading_or_execution">;
+export type GoalRecord = GeneratedGoalRecord;
+export type GoalClaim = GeneratedGoalClaim;
+export type GoalCriterion = GeneratedGoalCriterion;
+export type GoalEvidence = GeneratedGoalEvidence;
+export type GoalSnapshot = GeneratedGoalSnapshot;
+export type CreateGoalRequest = GeneratedCreateGoalRequest;
+export type AddGoalEvidenceRequest = GeneratedAddGoalEvidenceRequest;
+export type UpdateGoalRequest = GeneratedUpdateGoalRequest;
+export type UpdateGoalResponse = GeneratedUpdateGoalResponse;
+export type AddGoalEvidenceResponse = GeneratedAddGoalEvidenceResponse;
+export type UpdateGoalStatusRequest = GeneratedUpdateGoalStatusRequest;
+export type UpdateGoalStatusResponse = GeneratedUpdateGoalStatusResponse;
 
 // --- Alpha Zoo types ---
 
@@ -1127,15 +977,7 @@ export interface LiveRunnerResponse {
   was_running?: boolean;
 }
 
-export interface MessageItem {
-  message_id: string;
-  session_id: string;
-  role: string;
-  content: string;
-  created_at: string;
-  linked_attempt_id?: string;
-  metadata?: Record<string, unknown>;
-}
+export type MessageItem = GeneratedMessageResponse;
 
 // ---------------------------------------------------------------------------
 // ML Training types

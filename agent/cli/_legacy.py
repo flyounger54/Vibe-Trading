@@ -2583,8 +2583,9 @@ def cmd_swarm_cancel(run_id: str) -> None:
 def cmd_sessions() -> None:
     """List chat sessions."""
     from src.session.store import SessionStore
+    from src.state import default_state_db_path
 
-    store = SessionStore(base_dir=SESSIONS_DIR)
+    store = SessionStore(base_dir=SESSIONS_DIR, db_path=default_state_db_path())
     sessions = store.list_sessions()
 
     if not sessions:
@@ -2615,8 +2616,9 @@ def cmd_sessions() -> None:
 def cmd_session_chat(session_id: str, max_iter: int) -> None:
     """Continue a session chat."""
     from src.session.store import SessionStore
+    from src.state import default_state_db_path
 
-    store = SessionStore(base_dir=SESSIONS_DIR)
+    store = SessionStore(base_dir=SESSIONS_DIR, db_path=default_state_db_path())
     session = store.get_session(session_id)
 
     if session is None:

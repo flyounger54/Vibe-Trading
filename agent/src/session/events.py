@@ -64,7 +64,7 @@ class EventBus:
         max_buffer_size: Maximum number of buffered events per session.
     """
 
-    def __init__(self, max_buffer_size: int = 500) -> None:
+    def __init__(self, max_buffer_size: int = 500, event_store: Any = None) -> None:
         """Initialize the event bus.
 
         Args:
@@ -75,6 +75,7 @@ class EventBus:
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._event_store = event_store
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set the asyncio event loop, usually during api_server startup.
@@ -91,6 +92,8 @@ class EventBus:
             event: Event to publish.
         """
         session_id = event.session_id
+        if self._event_store is not None and event.event_id is not None:
+            self._event_store.append_event(event)
         with self._lock:
             if session_id not in self._buffers:
                 self._buffers[session_id] = []
@@ -167,6 +170,26 @@ class EventBus:
         Returns:
             List of events that should be replayed.
         """
+        if self._event_store is not None:
+            if not last_event_id and not replay_all:
+                return []
+            rows = self._event_store.get_events(
+                session_id,
+                after_event_id=last_event_id,
+                limit=self.max_buffer_size,
+                unknown_as_start=replay_all,
+            )
+            return [
+                SSEEvent(
+                    event_id=row["event_id"],
+                    event_type=row["event_type"],
+                    data=row["data"],
+                    session_id=row["session_id"],
+                    timestamp=row["timestamp"],
+                )
+                for row in rows
+            ]
+
         with self._lock:
             buffer = self._buffers.get(session_id, [])
             if not last_event_id:
@@ -237,3 +260,5 @@ class EventBus:
         """
         with self._lock:
             self._buffers.pop(session_id, None)
+        if self._event_store is not None:
+            self._event_store.clear_events(session_id)

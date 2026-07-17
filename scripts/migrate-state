@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Import or roll back legacy Vibe-Trading session state."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "agent"))
+
+from src.config.paths import get_runtime_root  # noqa: E402
+from src.state.database import default_state_db_path  # noqa: E402
+from src.state.legacy import migrate_legacy_sessions, rollback_migration  # noqa: E402
+from src.swarm.store import swarm_runs_root  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    migrate = subparsers.add_parser("import", help="backup and import JSON/JSONL sessions")
+    migrate.add_argument("--legacy-root", type=Path, default=ROOT / "agent" / "sessions")
+    migrate.add_argument("--database", type=Path, default=default_state_db_path())
+    migrate.add_argument(
+        "--schedule-file",
+        type=Path,
+        default=get_runtime_root() / "scheduled_research" / "scheduled_research_jobs.json",
+    )
+    migrate.add_argument("--swarm-root", type=Path, default=swarm_runs_root())
+    migrate.add_argument(
+        "--backup-root",
+        type=Path,
+        default=Path.home() / ".vibe-trading" / "upgrade-backups",
+    )
+    rollback = subparsers.add_parser("rollback", help="restore database state from a manifest")
+    rollback.add_argument("manifest", type=Path)
+    args = parser.parse_args()
+
+    if args.command == "rollback":
+        rollback_migration(args.manifest)
+        print(json.dumps({"status": "rolled_back", "manifest": str(args.manifest)}))
+        return 0
+
+    result = migrate_legacy_sessions(
+        args.legacy_root,
+        args.database,
+        args.backup_root,
+        schedule_path=args.schedule_file,
+        swarm_root=args.swarm_root,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

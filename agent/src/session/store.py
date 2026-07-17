@@ -1,244 +1,300 @@
-"""Filesystem-backed persistence for Session, Message, and Attempt records."""
+"""SQLite-backed persistence for Session, Message, Attempt and SSE event records."""
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from src.session.models import Attempt, Message, Session
+from src.state.database import StateDatabase
 
 logger = logging.getLogger(__name__)
 
 
 class SessionStore:
-    """Filesystem-backed persistent storage.
+    """Durable session repository backed by the unified SQLite WAL database.
 
-    Directory structure::
-
-        sessions/
-        ├── {session_id}/
-        │   ├── session.json
-        │   ├── messages.jsonl
-        │   └── attempts/
-        │       └── {attempt_id}/
-        │           └── attempt.json
-
-    Attributes:
-        base_dir: Root directory for session storage.
+    ``base_dir`` remains part of the constructor so existing API, CLI and MCP
+    callers retain their public contract. Legacy JSON/JSONL folders are never
+    modified; an explicit migration utility imports them into ``state.db``.
     """
 
-    def __init__(self, base_dir: Path) -> None:
-        """Initialize session storage.
-
-        Args:
-            base_dir: Root directory for session storage.
-        """
-        self.base_dir = base_dir
+    def __init__(self, base_dir: Path, *, db_path: Path | None = None) -> None:
+        self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-
-    def _session_dir(self, session_id: str) -> Path:
-        return self.base_dir / session_id
-
-    def _session_file(self, session_id: str) -> Path:
-        return self._session_dir(session_id) / "session.json"
-
-    def _messages_file(self, session_id: str) -> Path:
-        return self._session_dir(session_id) / "messages.jsonl"
-
-    def _attempt_dir(self, session_id: str, attempt_id: str) -> Path:
-        return self._session_dir(session_id) / "attempts" / attempt_id
-
-    def _attempt_file(self, session_id: str, attempt_id: str) -> Path:
-        return self._attempt_dir(session_id, attempt_id) / "attempt.json"
+        self.db_path = Path(db_path) if db_path is not None else self.base_dir / "state.db"
+        self.database = StateDatabase(self.db_path)
 
     # ---- Session CRUD ----
 
     def create_session(self, session: Session) -> Session:
-        """Create and persist a session.
-
-        Args:
-            session: Session instance to create.
-
-        Returns:
-            The persisted Session.
-
-        Raises:
-            ValueError: Raised when the session already exists.
-        """
-        session_dir = self._session_dir(session.session_id)
-        if session_dir.exists():
-            raise ValueError(f"Session {session.session_id} already exists")
-        session_dir.mkdir(parents=True)
-        (session_dir / "attempts").mkdir()
-        self._write_json(self._session_file(session.session_id), session.to_dict())
+        payload = session.to_dict()
+        try:
+            with self.database.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO sessions(session_id, title, status, created_at, updated_at, "
+                    "last_attempt_id, config_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        session.session_id,
+                        session.title,
+                        payload["status"],
+                        session.created_at,
+                        session.updated_at,
+                        session.last_attempt_id,
+                        _json(session.config),
+                    ),
+                )
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValueError(f"Session {session.session_id} already exists") from exc
+            raise
         return session
 
     def get_session(self, session_id: str) -> Optional[Session]:
-        """Read a session.
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+        return _session_from_row(row) if row is not None else None
 
-        Args:
-            session_id: Session ID.
+    def update_session(self, session: Session, *, expected_version: int | None = None) -> int:
+        payload = session.to_dict()
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT row_version FROM sessions WHERE session_id=?", (session.session_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Session {session.session_id} not found")
+            current_version = int(row["row_version"])
+            if expected_version is not None and current_version != expected_version:
+                from src.state.database import ConcurrentUpdateError
 
-        Returns:
-            The Session instance, or None when it does not exist.
-        """
-        path = self._session_file(session_id)
-        data = self._read_json(path)
-        if data is None:
-            return None
-        return Session.from_dict(data)
+                raise ConcurrentUpdateError(
+                    f"session/{session.session_id} version {current_version} != {expected_version}"
+                )
+            next_version = current_version + 1
+            connection.execute(
+                "UPDATE sessions SET title=?, status=?, created_at=?, updated_at=?, "
+                "last_attempt_id=?, config_json=?, row_version=? WHERE session_id=?",
+                (
+                    session.title,
+                    payload["status"],
+                    session.created_at,
+                    session.updated_at,
+                    session.last_attempt_id,
+                    _json(session.config),
+                    next_version,
+                    session.session_id,
+                ),
+            )
+        return next_version
 
-    def update_session(self, session: Session) -> None:
-        """Update a session.
-
-        Args:
-            session: Modified Session instance.
-        """
-        self._write_json(self._session_file(session.session_id), session.to_dict())
+    def session_version(self, session_id: str) -> int | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT row_version FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+        return int(row["row_version"]) if row is not None else None
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and all of its data.
-
-        Args:
-            session_id: Session ID.
-
-        Returns:
-            Whether the delete succeeded.
-        """
-        session_dir = self._session_dir(session_id)
-        if not session_dir.exists():
-            return False
-        import shutil
-        shutil.rmtree(session_dir, ignore_errors=True)
-        return True
+        with self.database.transaction() as connection:
+            cursor = connection.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+        return cursor.rowcount > 0
 
     def list_sessions(self, limit: int = 50) -> List[Session]:
-        """List all sessions in descending update-time order.
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM sessions ORDER BY updated_at DESC, session_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_session_from_row(row) for row in rows]
 
-        Args:
-            limit: Maximum number of sessions to return.
-
-        Returns:
-            List of Session objects.
-        """
-        sessions: List[Session] = []
-        if not self.base_dir.exists():
-            return sessions
-        for session_dir in self.base_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            session_file = session_dir / "session.json"
-            data = self._read_json(session_file)
-            if data:
-                sessions.append(Session.from_dict(data))
-        sessions.sort(key=lambda s: s.updated_at, reverse=True)
-        return sessions[:limit]
-
-    # ---- Message Append-Only Log ----
+    # ---- Messages ----
 
     def append_message(self, message: Message) -> None:
-        """Append a message to the session JSONL log.
-
-        Args:
-            message: Message to append.
-        """
-        path = self._messages_file(message.session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(message.to_dict(), ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        with self.database.transaction() as connection:
+            connection.execute(
+                "INSERT INTO messages(message_id, session_id, role, content, created_at, "
+                "linked_attempt_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    message.message_id,
+                    message.session_id,
+                    message.role,
+                    message.content,
+                    message.created_at,
+                    message.linked_attempt_id,
+                    _json(message.metadata),
+                ),
+            )
 
     def get_messages(self, session_id: str, limit: int = 100) -> List[Message]:
-        """Read all messages for a session.
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM (SELECT * FROM messages WHERE session_id=? "
+                "ORDER BY sequence DESC LIMIT ?) ORDER BY sequence ASC",
+                (session_id, limit),
+            ).fetchall()
+        return [
+            Message(
+                message_id=row["message_id"],
+                session_id=row["session_id"],
+                role=row["role"],
+                content=row["content"],
+                created_at=row["created_at"],
+                linked_attempt_id=row["linked_attempt_id"],
+                metadata=json.loads(row["metadata_json"]),
+            )
+            for row in rows
+        ]
 
-        Args:
-            session_id: Session ID.
-            limit: Maximum number of messages to return.
-
-        Returns:
-            List of Message objects in chronological order.
-        """
-        path = self._messages_file(session_id)
-        if not path.exists():
-            return []
-        messages: List[Message] = []
-        for line in path.read_text(encoding="utf-8").strip().splitlines():
-            if line.strip():
-                try:
-                    messages.append(Message.from_dict(json.loads(line)))
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "Skipping corrupted message line in session %s: %s",
-                        session_id,
-                        line[:200],
-                    )
-        return messages[-limit:]
-
-    # ---- Attempt CRUD ----
+    # ---- Attempts ----
 
     def create_attempt(self, attempt: Attempt) -> Attempt:
-        """Create an execution attempt.
-
-        Args:
-            attempt: Attempt to create.
-
-        Returns:
-            The persisted Attempt.
-        """
-        attempt_dir = self._attempt_dir(attempt.session_id, attempt.attempt_id)
-        attempt_dir.mkdir(parents=True, exist_ok=True)
-        self._write_json(
-            self._attempt_file(attempt.session_id, attempt.attempt_id),
-            attempt.to_dict(),
-        )
+        values = _attempt_values(attempt)
+        with self.database.transaction() as connection:
+            connection.execute(
+                "INSERT INTO attempts(attempt_id, session_id, parent_attempt_id, status, prompt, "
+                "run_dir, summary, react_trace_json, created_at, completed_at, error, metrics_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
         return attempt
 
     def get_attempt(self, session_id: str, attempt_id: str) -> Optional[Attempt]:
-        """Read an execution attempt.
-
-        Args:
-            session_id: Session ID.
-            attempt_id: Attempt ID.
-
-        Returns:
-            The Attempt instance, or None when it does not exist.
-        """
-        path = self._attempt_file(session_id, attempt_id)
-        data = self._read_json(path)
-        if data is None:
-            return None
-        return Attempt.from_dict(data)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM attempts WHERE session_id=? AND attempt_id=?",
+                (session_id, attempt_id),
+            ).fetchone()
+        return _attempt_from_row(row) if row is not None else None
 
     def update_attempt(self, attempt: Attempt) -> None:
-        """Update an execution attempt.
+        values = _attempt_values(attempt)
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE attempts SET session_id=?, parent_attempt_id=?, status=?, prompt=?, "
+                "run_dir=?, summary=?, react_trace_json=?, created_at=?, completed_at=?, error=?, "
+                "metrics_json=?, row_version=row_version+1 WHERE attempt_id=?",
+                values[1:] + (values[0],),
+            )
+        if cursor.rowcount == 0:
+            raise ValueError(f"Attempt {attempt.attempt_id} not found")
 
-        Args:
-            attempt: Modified Attempt.
-        """
-        self._write_json(
-            self._attempt_file(attempt.session_id, attempt.attempt_id),
-            attempt.to_dict(),
-        )
+    # ---- Persistent event cursor ----
 
-    # ---- IO Helpers ----
+    def append_event(self, event: Any) -> int:
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO events(event_id, session_id, event_type, data_json, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    event.event_id,
+                    event.session_id,
+                    event.event_type,
+                    _json(event.data),
+                    event.timestamp,
+                ),
+            )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT cursor FROM events WHERE event_id=?", (event.event_id,)
+                ).fetchone()
+                return int(row["cursor"])
+            return int(cursor.lastrowid)
 
-    @staticmethod
-    def _write_json(path: Path, data: Dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    def get_events(
+        self,
+        session_id: str,
+        *,
+        after_event_id: str | None = None,
+        limit: int = 500,
+        unknown_as_start: bool = False,
+    ) -> list[dict[str, Any]]:
+        after_cursor = 0
+        with self.database.connect() as connection:
+            if after_event_id:
+                row = connection.execute(
+                    "SELECT cursor FROM events WHERE session_id=? AND event_id=?",
+                    (session_id, after_event_id),
+                ).fetchone()
+                if row is None and not unknown_as_start:
+                    return []
+                if row is not None:
+                    after_cursor = int(row["cursor"])
+            rows = connection.execute(
+                "SELECT * FROM events WHERE session_id=? AND cursor>? "
+                "ORDER BY cursor ASC LIMIT ?",
+                (session_id, after_cursor, limit),
+            ).fetchall()
+        return [
+            {
+                "cursor": int(row["cursor"]),
+                "event_id": row["event_id"],
+                "session_id": row["session_id"],
+                "event_type": row["event_type"],
+                "data": json.loads(row["data_json"]),
+                "timestamp": float(row["timestamp"]),
+            }
+            for row in rows
+        ]
 
-    @staticmethod
-    def _read_json(path: Path) -> Optional[Dict[str, Any]]:
-        if not path.exists():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
+    def clear_events(self, session_id: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute("DELETE FROM events WHERE session_id=?", (session_id,))
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _session_from_row(row: Any) -> Session:
+    return Session.from_dict(
+        {
+            "session_id": row["session_id"],
+            "title": row["title"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_attempt_id": row["last_attempt_id"],
+            "config": json.loads(row["config_json"]),
+        }
+    )
+
+
+def _attempt_values(attempt: Attempt) -> tuple[Any, ...]:
+    payload = attempt.to_dict()
+    return (
+        attempt.attempt_id,
+        attempt.session_id,
+        attempt.parent_attempt_id,
+        payload["status"],
+        attempt.prompt,
+        attempt.run_dir,
+        attempt.summary,
+        _json(attempt.react_trace),
+        attempt.created_at,
+        attempt.completed_at,
+        attempt.error,
+        _json(attempt.metrics) if attempt.metrics is not None else None,
+    )
+
+
+def _attempt_from_row(row: Any) -> Attempt:
+    return Attempt.from_dict(
+        {
+            "attempt_id": row["attempt_id"],
+            "session_id": row["session_id"],
+            "parent_attempt_id": row["parent_attempt_id"],
+            "status": row["status"],
+            "prompt": row["prompt"],
+            "run_dir": row["run_dir"],
+            "summary": row["summary"],
+            "react_trace": json.loads(row["react_trace_json"]),
+            "created_at": row["created_at"],
+            "completed_at": row["completed_at"],
+            "error": row["error"],
+            "metrics": json.loads(row["metrics_json"]) if row["metrics_json"] else None,
+        }
+    )

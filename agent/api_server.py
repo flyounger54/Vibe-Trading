@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, UploadFile, status
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -30,8 +32,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from rich.console import Console
 
 from cli._version import __version__ as APP_VERSION
-from src.goal.context import default_goal_criteria
+from src.contracts.goals import (
+    CreateGoalRequest,
+    GoalApplicationService,
+    GoalEvidenceResponse,
+    GoalRecordResponse,
+    GoalSnapshotResponse,
+)
 from src.ui_services import build_run_analysis, load_run_context
+from src.contracts.errors import (
+    ContractError,
+    ErrorEnvelope,
+    error_code_for_status,
+    status_for_error_code,
+    status_is_retryable,
+)
+from src.contracts.sessions import (
+    CreateSessionRequest,
+    MessageResponse,
+    SendMessageRequest,
+    SessionResponse,
+    UpdateSessionRequest,
+)
 
 # UTF-8 on Windows
 import sys as _sys
@@ -210,53 +232,6 @@ class UpdateDataSourceSettingsRequest(BaseModel):
     clear_tushare_token: bool = False
 
 
-# ---- V4 Session Models ----
-
-class CreateSessionRequest(BaseModel):
-    """Create session request body."""
-    title: str = Field("", description="Session title")
-    config: Optional[Dict[str, Any]] = Field(None, description="Session config")
-
-
-class SessionResponse(BaseModel):
-    """Session record."""
-    session_id: str
-    title: str
-    status: str
-    created_at: str
-    updated_at: str
-    last_attempt_id: Optional[str] = None
-
-
-class SendMessageRequest(BaseModel):
-    """Send chat message: natural-language strategy description."""
-    content: str = Field(..., description="Natural language strategy description", min_length=1, max_length=5000)
-
-
-class MessageResponse(BaseModel):
-    """Stored chat message."""
-    message_id: str
-    session_id: str
-    role: str
-    content: str
-    created_at: str
-    linked_attempt_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class CreateGoalRequest(BaseModel):
-    """Create or replace a finance research goal."""
-
-    objective: str = Field(..., min_length=1, max_length=5000)
-    criteria: List[str] = Field(default_factory=list)
-    ui_summary: str = ""
-    protocol: str = "thesis_review"
-    risk_tier: str = "research_general"
-    token_budget: Optional[int] = Field(None, ge=1)
-    turn_budget: Optional[int] = Field(None, ge=1)
-    time_budget_seconds: Optional[int] = Field(None, ge=1)
-
-
 class UpdateGoalRequest(BaseModel):
     """Edit mutable finance research goal fields."""
 
@@ -293,20 +268,10 @@ class AddGoalEvidenceRequest(BaseModel):
     contradicts_claim_ids: List[str] = Field(default_factory=list)
 
 
-class GoalSnapshotResponse(BaseModel):
-    """Finance research goal snapshot."""
-
-    goal: Dict[str, Any]
-    claims: List[Dict[str, Any]]
-    criteria: List[Dict[str, Any]]
-    evidence: List[Dict[str, Any]]
-    evidence_count: int = 0
-
-
 class AddGoalEvidenceResponse(BaseModel):
     """Response after appending goal evidence."""
 
-    evidence: Dict[str, Any]
+    evidence: GoalEvidenceResponse
     snapshot: GoalSnapshotResponse
 
 
@@ -332,14 +297,14 @@ class UpdateGoalStatusRequest(BaseModel):
 class UpdateGoalStatusResponse(BaseModel):
     """Response after changing a goal status."""
 
-    goal: Dict[str, Any]
+    goal: GoalRecordResponse
     snapshot: GoalSnapshotResponse
 
 
 class UpdateGoalResponse(BaseModel):
     """Response after editing a goal."""
 
-    goal: Dict[str, Any]
+    goal: GoalRecordResponse
     snapshot: GoalSnapshotResponse
 
 
@@ -557,6 +522,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def _versioned_http_error(request: Request, exc: HTTPException):
+    """Return stable errors for /api/v1 while preserving legacy FastAPI errors."""
+    if not request.url.path.startswith("/api/v1/"):
+        return await http_exception_handler(request, exc)
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    envelope = ErrorEnvelope(
+        code=error_code_for_status(exc.status_code),
+        message=str(exc.detail),
+        request_id=request_id,
+        retryable=status_is_retryable(exc.status_code),
+        details=exc.detail if not isinstance(exc.detail, str) else None,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=envelope.model_dump(mode="json"),
+        headers={"X-Request-ID": request_id},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _versioned_validation_error(request: Request, exc: RequestValidationError):
+    if not request.url.path.startswith("/api/v1/"):
+        return await request_validation_exception_handler(request, exc)
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    envelope = ErrorEnvelope(
+        code=error_code_for_status(422),
+        message="Request validation failed",
+        request_id=request_id,
+        retryable=False,
+        details=exc.errors(),
+    )
+    return JSONResponse(
+        status_code=422,
+        content=envelope.model_dump(mode="json"),
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.middleware("http")
@@ -1364,191 +1368,20 @@ def _validate_path_param(value: str, kind: str) -> None:
 # API Endpoints
 # ============================================================================
 
-@app.get("/runs/{run_id}/code", dependencies=[Depends(require_auth)])
-async def get_run_code(run_id: str):
-    """Return strategy source files for a run.
+from src.api.run_routes import register_run_routes  # noqa: E402
 
-    Args:
-        run_id: Run identifier.
-
-    Returns:
-        Map filename -> source text.
-    """
-    _validate_path_param(run_id, "run_id")
-    run_dir = RUNS_DIR / run_id / "code"
-    if not run_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Code directory for run {run_id} not found")
-    result = {}
-    for f in ["signal_engine.py"]:
-        p = run_dir / f
-        if p.exists():
-            result[f] = p.read_text(encoding="utf-8")
-    return result
-
-
-@app.get("/runs/{run_id}/pine", dependencies=[Depends(require_auth)])
-async def get_run_pine(run_id: str):
-    """Return Pine Script file for a run.
-
-    Args:
-        run_id: Run identifier.
-
-    Returns:
-        Object with pine script content and exists flag.
-    """
-    _validate_path_param(run_id, "run_id")
-    pine_path = RUNS_DIR / run_id / "artifacts" / "strategy.pine"
-    if not pine_path.exists():
-        return {"exists": False, "content": None}
-    return {
-        "exists": True,
-        "content": pine_path.read_text(encoding="utf-8"),
-    }
-
-
-@app.get("/runs/{run_id}", response_model=RunResponse, dependencies=[Depends(require_auth)])
-async def get_run_result(
-    run_id: str,
-    chart_symbol: Optional[str] = Query(None, description="Opt in to chart payloads for a single symbol"),
-    chart_payload: Optional[str] = Query(
-        None,
-        description="Optional chart payload mode. Use 'summary' to omit chart rows and trade markers.",
-    ),
-):
-    """Fetch details for a historical run by ``run_id``.
-
-    The default response stays unchanged for existing consumers. Chart-heavy
-    optimizations are opt-in via query parameters.
-    """
-    _validate_path_param(run_id, "run_id")
-    if chart_payload not in (None, "summary"):
-        raise HTTPException(status_code=400, detail="invalid chart_payload")
-    run_dir = RUNS_DIR / run_id
-
-    if not run_dir.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Run {run_id} not found"
-        )
-
-    wants_chart_meta = bool(chart_payload or chart_symbol)
-    chart_symbols: List[str] = []
-    response = _build_response_from_run_dir(
-        run_dir,
-        elapsed=0.0,
-        include_analysis=True,
-        chart_symbol=chart_symbol,
-        chart_payload=chart_payload or "full",
-        chart_symbols_out=chart_symbols if wants_chart_meta else None,
-    )
-
-    if wants_chart_meta:
-        payload = _run_response_payload(response)
-        payload["chart_symbols"] = chart_symbols
-        return JSONResponse(payload)
-
-    return response
-
-
-@app.get("/runs", response_model=List[RunInfo], dependencies=[Depends(require_auth)])
-async def list_runs(limit: int = 20):
-    """List recent runs with summary fields."""
-    limit = min(max(1, limit), 100)
-    runs_dir = RUNS_DIR
-
-    if not runs_dir.exists():
-        return []
-
-    run_dirs = sorted(
-        [d for d in runs_dir.iterdir() if d.is_dir()],
-        key=lambda x: x.name,
-        reverse=True
-    )
-
-    results = []
-    for d in run_dirs[:limit]:
-        run_id = d.name
-
-        # Status from state.json or artifacts
-        status_val = "unknown"
-        state_file = _load_json_file(d / "state.json")
-        if state_file:
-            status_val = str(state_file.get("status") or "unknown").lower()
-        elif (d / "artifacts" / "equity.csv").exists():
-            status_val = "success"
-        elif (d / "review_report.json").exists():
-            status_val = "success"
-
-        # Parse created_at from run_id (YYYYMMDD_HHMMSS or run_YYYYMMDD_HHMMSS)
-        created_at = "Unknown"
-        if run_id.startswith("run_"):
-            parts = run_id.split('_')
-            if len(parts) >= 3:
-                d_str, t_str = parts[1], parts[2]
-                if len(d_str) == 8 and len(t_str) == 6:
-                    created_at = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]} {t_str[:2]}:{t_str[2:4]}:{t_str[4:6]}"
-        elif "_" in run_id:
-            parts = run_id.split('_')
-            if len(parts) >= 2:
-                d_str, t_str = parts[0], parts[1]
-                if len(d_str) == 8 and len(t_str) == 6:
-                    created_at = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]} {t_str[:2]}:{t_str[2:4]}:{t_str[4:6]}"
-
-        if created_at == "Unknown":
-            mtime = datetime.fromtimestamp(d.stat().st_mtime)
-            created_at = mtime.strftime("%Y-%m-%d %H:%M:%S")
-
-        prompt = None
-        req_file = d / "req.json"
-        planner_file = d / "planner_output.json"
-        if req_file.exists():
-            try:
-                req_data = json.loads(req_file.read_text(encoding="utf-8"))
-                prompt = req_data.get("prompt")
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if not prompt and planner_file.exists():
-            try:
-                planner_data = json.loads(planner_file.read_text(encoding="utf-8"))
-                prompt = planner_data.get("user_goal") or planner_data.get("goal")
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if not prompt:
-            prompt_file = d / "user_prompt.txt"
-            if prompt_file.exists():
-                prompt = prompt_file.read_text(encoding="utf-8").strip()
-
-        total_return = None
-        sharpe = None
-        metrics_file = d / "artifacts" / "metrics.csv"
-        if metrics_file.exists():
-            try:
-                import csv
-                with open(metrics_file, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        total_return = float(row.get('total_return', 0) or 0)
-                        sharpe = float(row.get('sharpe', 0) or 0)
-                        break
-            except (OSError, ValueError):
-                pass
-
-        run_context = load_run_context(d)
-        results.append(RunInfo(
-            run_id=run_id,
-            status=status_val,
-            created_at=created_at,
-            prompt=prompt or "Manual Analysis",
-            total_return=total_return,
-            sharpe=sharpe,
-            codes=run_context.get("codes") or [],
-            start_date=run_context.get("start_date"),
-            end_date=run_context.get("end_date"),
-        ))
-
-    return results
+register_run_routes(
+    app,
+    require_auth=require_auth,
+    runs_dir=RUNS_DIR,
+    run_response_model=RunResponse,
+    run_info_model=RunInfo,
+    validate_path=_validate_path_param,
+    build_response=_build_response_from_run_dir,
+    response_payload=_run_response_payload,
+    load_json_file=_load_json_file,
+    load_run_context=load_run_context,
+)
 
 
 @app.get(
@@ -1619,21 +1452,11 @@ async def update_llm_settings(payload: UpdateLLMSettingsRequest):
     return _build_llm_settings_response(_read_env_values(ENV_PATH))
 
 
-@app.get(
-    "/settings/data-sources",
-    response_model=DataSourceSettingsResponse,
-    dependencies=[Depends(require_local_or_auth)],
-)
 async def get_data_source_settings():
     """Return project-local data source credentials for the Web UI."""
     return _build_data_source_settings_response()
 
 
-@app.put(
-    "/settings/data-sources",
-    response_model=DataSourceSettingsResponse,
-    dependencies=[Depends(require_settings_write_auth)],
-)
 async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
     """Persist project-local data source credentials and update the running process."""
     current_values = _read_settings_env_values()
@@ -1770,9 +1593,10 @@ def _get_session_service():
     from src.session.store import SessionStore
     from src.session.events import EventBus
     from src.session.service import SessionService
+    from src.state import default_state_db_path
 
-    store = SessionStore(base_dir=SESSIONS_DIR)
-    event_bus = EventBus()
+    store = SessionStore(base_dir=SESSIONS_DIR, db_path=default_state_db_path())
+    event_bus = EventBus(event_store=store)
 
     try:
         loop = asyncio.get_event_loop()
@@ -1875,37 +1699,15 @@ async def create_session_goal(session_id: str, req: CreateGoalRequest):
     """Create or replace the current finance research goal for a session."""
     _validate_path_param(session_id, "session_id")
     svc, _session = _get_existing_session_or_404(session_id)
-    from src.goal import RiskTier
-
-    criteria = [item.strip() for item in req.criteria if item.strip()]
-    if not criteria:
-        criteria = default_goal_criteria()
-    try:
-        risk_tier = RiskTier(req.risk_tier)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"invalid risk_tier: {req.risk_tier}") from exc
-    if risk_tier is RiskTier.LIVE_TRADING_OR_EXECUTION:
-        raise HTTPException(status_code=400, detail="live trading or execution goals are not supported")
-
     goal_store = _get_goal_store()
     try:
-        goal = goal_store.replace_goal(
+        snapshot = GoalApplicationService(goal_store).create(
             session_id=session_id,
-            objective=req.objective,
-            criteria=criteria,
-            ui_summary=req.ui_summary,
+            request=req,
             source="api",
-            protocol=req.protocol,
-            risk_tier=risk_tier,
-            token_budget=req.token_budget,
-            turn_budget=req.turn_budget,
-            time_budget_seconds=req.time_budget_seconds,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    snapshot = goal_store.get_goal_snapshot(goal.goal_id)
-    if snapshot is None:
-        raise HTTPException(status_code=500, detail="Goal created but could not be reloaded")
+    except ContractError as exc:
+        raise HTTPException(status_code=status_for_error_code(exc.code), detail=exc.message) from exc
     svc.event_bus.emit(session_id, "goal.created", {"goal": snapshot["goal"]})
     return snapshot
 
@@ -2076,11 +1878,6 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     _get_goal_store().delete_session_goals(session_id)
     return {"status": "deleted", "session_id": session_id}
-
-
-class UpdateSessionRequest(BaseModel):
-    """Session update fields."""
-    title: Optional[str] = None
 
 
 @app.patch("/sessions/{session_id}", dependencies=[Depends(require_auth)])
@@ -2732,7 +2529,6 @@ def _fetch_broker_ceilings(broker: str) -> Optional[Dict[str, Any]]:
     }
 
 
-@app.post("/mandate/commit", dependencies=[Depends(require_auth)])
 async def commit_mandate_endpoint(payload: CommitMandateRequest):
     """Commit a user-selected mandate profile — the only mandate write path.
 
@@ -2780,7 +2576,6 @@ async def commit_mandate_endpoint(payload: CommitMandateRequest):
     return result
 
 
-@app.post("/live/halt", dependencies=[Depends(require_auth)])
 async def halt_live_endpoint(payload: LiveHaltRequest):
     """Trip the live kill switch (privileged surface action, Consent §4).
 
@@ -2805,7 +2600,6 @@ async def halt_live_endpoint(payload: LiveHaltRequest):
     return result
 
 
-@app.post("/live/resume", dependencies=[Depends(require_auth)])
 async def resume_live_endpoint(payload: LiveHaltRequest):
     """Clear the live kill switch (privileged surface action, Consent §4).
 
@@ -2937,7 +2731,6 @@ def _runner_liveness_state(broker: str) -> RunnerLivenessState:
     return RunnerLivenessState(broker=broker, alive=alive, last_tick=tick, last_tick_age_seconds=age)
 
 
-@app.get("/live/status", response_model=LiveStatusResponse, dependencies=[Depends(require_auth)])
 async def live_status_endpoint(broker: Optional[str] = Query(None, max_length=64)):
     """Return live-channel status: auth, active mandate, runner liveness, halt (C2).
 
@@ -2978,7 +2771,6 @@ async def live_status_endpoint(broker: Optional[str] = Query(None, max_length=64
     return LiveStatusResponse(global_halted=halt_flag_set(broker=None), brokers=statuses)
 
 
-@app.post("/live/authorize", dependencies=[Depends(require_auth)])
 async def live_authorize_endpoint(payload: LiveAuthorizeRequest):
     """Describe the OAuth bootstrap on-ramp for a live broker (C2 web on-ramp).
 
@@ -3183,7 +2975,6 @@ async def _drive_runner(runner: Any) -> None:
         await asyncio.get_running_loop().run_in_executor(None, lambda: result)
 
 
-@app.post("/live/runner/start", dependencies=[Depends(require_auth)])
 async def start_runner_endpoint(payload: LiveRunnerControlRequest):
     """Start the persistent live runner for a broker (SPEC §7.5).
 
@@ -3238,7 +3029,6 @@ async def start_runner_endpoint(payload: LiveRunnerControlRequest):
     return {"broker": broker, "started": True, "already_running": False}
 
 
-@app.post("/live/runner/stop", dependencies=[Depends(require_auth)])
 async def stop_runner_endpoint(payload: LiveRunnerControlRequest):
     """Stop the persistent live runner for a broker (SPEC §7.5).
 
@@ -3397,12 +3187,6 @@ class ScheduledRunResponse(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
 
 
-@app.post(
-    "/scheduled-runs",
-    response_model=ScheduledRunResponse,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_auth)],
-)
 async def create_scheduled_run(request: CreateScheduledRunRequest) -> ScheduledRunResponse:
     """Create (or replace) a scheduled research job.
 
@@ -3432,11 +3216,6 @@ async def create_scheduled_run(request: CreateScheduledRunRequest) -> ScheduledR
     return ScheduledRunResponse(**job.to_dict())
 
 
-@app.get(
-    "/scheduled-runs",
-    response_model=List[ScheduledRunResponse],
-    dependencies=[Depends(require_auth)],
-)
 async def list_scheduled_runs(
     status_filter: Optional[str] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=200),
@@ -3446,17 +3225,65 @@ async def list_scheduled_runs(
     return [ScheduledRunResponse(**j.to_dict()) for j in jobs]
 
 
-@app.delete(
-    "/scheduled-runs/{job_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_auth)],
-)
 async def delete_scheduled_run(job_id: str) -> None:
     """Cancel (delete) a scheduled research job by id."""
     _validate_path_param(job_id, "job_id")
     removed = _get_scheduled_research_store().delete(job_id)
     if not removed:
         raise HTTPException(status_code=404, detail=f"scheduled run {job_id} not found")
+
+
+# Route ownership is explicit by domain; handlers retain compatibility while
+# dependencies and public paths are registered in isolated modules.
+from src.api.data_routes import register_data_routes  # noqa: E402
+from src.api.live_routes import register_live_routes  # noqa: E402
+from src.api.research_routes import register_research_routes  # noqa: E402
+
+register_data_routes(
+    app,
+    require_read=require_local_or_auth,
+    require_write=require_settings_write_auth,
+    response_model=DataSourceSettingsResponse,
+    get_settings=get_data_source_settings,
+    update_settings=update_data_source_settings,
+)
+register_research_routes(
+    app,
+    require_auth=require_auth,
+    response_model=ScheduledRunResponse,
+    create=create_scheduled_run,
+    list_all=list_scheduled_runs,
+    delete=delete_scheduled_run,
+)
+register_live_routes(
+    app,
+    require_auth=require_auth,
+    status_response_model=LiveStatusResponse,
+    commit_mandate=commit_mandate_endpoint,
+    halt=halt_live_endpoint,
+    resume=resume_live_endpoint,
+    status=live_status_endpoint,
+    authorize=live_authorize_endpoint,
+    start_runner=start_runner_endpoint,
+    stop_runner=stop_runner_endpoint,
+)
+
+# Canonical v1 session handlers live in a route module and use the same
+# SessionService as CLI and legacy HTTP adapters.
+from src.api.session_routes import register_session_routes  # noqa: E402
+
+register_session_routes(
+    app,
+    require_auth=require_auth,
+    get_service=_get_session_service,
+    shell_tools_enabled=_shell_tools_enabled_for_request,
+)
+
+# Install /api/v1 aliases only after every route module has registered. Legacy
+# paths remain active for two-version compatibility.
+from src.api.versioning import install_version_aliases  # noqa: E402
+
+install_version_aliases(app)
 
 
 # ============================================================================

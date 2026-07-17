@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 from src.config.paths import get_runtime_root
 from src.scheduled_research.models import ScheduledResearchJob, validate_schedule
+from src.state.database import StateDatabase, default_state_db_path
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,10 @@ def _default_store_path() -> Path:
     :func:`src.config.paths.get_runtime_root`.
     """
     return get_runtime_root() / "scheduled_research" / _STORE_FILENAME
+
+
+def _default_database_path() -> Path:
+    return default_state_db_path()
 
 
 class CorruptStoreError(RuntimeError):
@@ -68,7 +73,7 @@ class ScheduledResearchJobStore:
         path: Absolute path of the backing JSON file.
     """
 
-    def __init__(self, path: Optional[Path] = None) -> None:
+    def __init__(self, path: Optional[Path] = None, *, database_path: Optional[Path] = None) -> None:
         """Initialize the store.
 
         Args:
@@ -76,6 +81,10 @@ class ScheduledResearchJobStore:
                 ``agent/data/scheduled_research_jobs.json``.
         """
         self.path: Path = path if path is not None else _default_store_path()
+        self._database: StateDatabase | None = (
+            StateDatabase(database_path or _default_database_path()) if path is None else None
+        )
+        self._legacy_checked = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,6 +100,26 @@ class ScheduledResearchJobStore:
         Raises:
             CorruptStoreError: When the file exists but cannot be parsed.
         """
+        if self._database is not None:
+            records = {
+                record_id: ScheduledResearchJob.from_dict(payload)
+                for record_id, payload, _version in self._database.list_records("schedule")
+            }
+            if records or self._legacy_checked or not self.path.exists():
+                self._legacy_checked = True
+                return records
+            # One-time compatibility import. The legacy file remains untouched
+            # until the explicit node-2 migration/backup command is accepted.
+            self._legacy_checked = True
+            legacy = self._load_json_file()
+            self._database.replace_records(
+                "schedule", {job_id: job.to_dict() for job_id, job in legacy.items()}
+            )
+            return legacy
+
+        return self._load_json_file()
+
+    def _load_json_file(self) -> Dict[str, ScheduledResearchJob]:
         if not self.path.exists():
             return {}
         try:
@@ -119,6 +148,12 @@ class ScheduledResearchJobStore:
         Raises:
             OSError: When the directory cannot be created or the write fails.
         """
+        if self._database is not None:
+            self._database.replace_records(
+                "schedule", {job_id: job.to_dict() for job_id, job in jobs.items()}
+            )
+            return
+
         target = self.path
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(self._envelope(jobs), ensure_ascii=False, indent=2)
@@ -147,6 +182,9 @@ class ScheduledResearchJobStore:
             CorruptStoreError: When the existing store cannot be parsed.
         """
         validate_schedule(job.schedule)
+        if self._database is not None:
+            self._database.upsert_record("schedule", job.id, job.to_dict())
+            return
         jobs = self.load()
         jobs[job.id] = job
         self.save(jobs)
@@ -160,6 +198,11 @@ class ScheduledResearchJobStore:
         Returns:
             The matching job or ``None``.
         """
+        if self._database is not None:
+            record = self._database.get_record("schedule", job_id)
+            if record is None and not self._legacy_checked and self.path.exists():
+                return self.load().get(job_id)
+            return ScheduledResearchJob.from_dict(record[0]) if record is not None else None
         return self.load().get(job_id)
 
     def list_jobs(
@@ -194,6 +237,10 @@ class ScheduledResearchJobStore:
             ``True`` when the job was found and removed; ``False`` when it was
             not in the store.
         """
+        if self._database is not None:
+            if not self._legacy_checked and self.path.exists():
+                self.load()
+            return self._database.delete_record("schedule", job_id)
         jobs = self.load()
         if job_id not in jobs:
             return False
