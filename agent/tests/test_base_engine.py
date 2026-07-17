@@ -146,7 +146,8 @@ class TestClosePosition:
         assert "000001.SZ" not in engine.positions
         assert len(engine.trades) == 1
         t = engine.trades[0]
-        assert t.pnl == pytest.approx(1000.0)  # 1000 × (16 - 15) = +1000
+        assert t.gross_pnl == pytest.approx(1000.0)
+        assert t.pnl == pytest.approx(1000.0 - t.commission)
         assert t.exit_reason == "signal"
         assert t.holding_bars == 5
 
@@ -160,7 +161,8 @@ class TestClosePosition:
         engine._close_position("600519.SH", 1750.0, pd.Timestamp("2025-01-06"), "signal")
 
         t = engine.trades[0]
-        assert t.pnl == pytest.approx(-5000.0)  # 100 × (1750 - 1800) = -5000
+        assert t.gross_pnl == pytest.approx(-5000.0)
+        assert t.pnl == pytest.approx(-5000.0 - t.commission)
         assert t.direction == 1
 
     def test_close_nonexistent_position_noop(self) -> None:

@@ -33,6 +33,7 @@ from backtest.loaders.registry import (
     resolve_loader,
 )
 from backtest.loaders.base import NoAvailableSourceError, validate_ohlc
+from backtest.data_bundle import DataBundle
 # Symbol classification lives in ``_market_hooks`` so runner.py and
 # composite.py share a single source of truth (audit-2026-05-18 B1+C1+C2).
 # ``_detect_market`` is also re-exported here for back-compat with
@@ -458,7 +459,8 @@ def main(run_dir: Path) -> None:
         print(json.dumps({"error": f"SignalEngine interface error: {exc}"}))
         sys.exit(1)
 
-    # Data: auto split vs single loader
+    # Data: auto split vs single loader. This is the only provider-fetch stage;
+    # engines receive an immutable DataBundle and can never fetch again.
     interval = config.get("interval", "1D")
 
     if source == "auto":
@@ -495,13 +497,6 @@ def main(run_dir: Path) -> None:
                     loader = fb_loader
                     break
 
-    # Loader-boundary OHLC sanity for every source, centralized at the one
-    # point all fetch paths converge (auto / single / runtime fallback).
-    data_map = _sanitize_data_map(data_map)
-    if not data_map:
-        print(json.dumps({"error": "No data fetched"}))
-        sys.exit(1)
-
     if source == "auto":
         config["_run_card_effective_sources"] = sorted(_group_codes_by_source(codes))
     else:
@@ -521,16 +516,39 @@ def main(run_dir: Path) -> None:
     else:
         bars_per_year = calc_bars_per_year(interval, effective_source)
 
-    # Auto mode: wrap preloaded data in a dummy loader
-    if source == "auto":
-        loader = _AutoLoader(data_map)
+    from backtest.engines.base import BacktestExecutionError
 
-    if engine_type == "options":
-        from backtest.engines.options_portfolio import run_options_backtest
-        run_options_backtest(config, loader, signal_engine, run_dir, bars_per_year=bars_per_year)
-    else:
-        market_engine = _create_market_engine(effective_source, config, codes)
-        market_engine.run_backtest(config, loader, signal_engine, run_dir, bars_per_year=bars_per_year)
+    try:
+        data_bundle = build_data_bundle(
+            config,
+            loader if source != "auto" else None,
+            data_map=data_map,
+        )
+
+        if engine_type == "options":
+            from backtest.engines.options_portfolio import run_options_backtest
+            run_options_backtest(
+                config, data_bundle, signal_engine, run_dir,
+                bars_per_year=bars_per_year,
+            )
+        else:
+            market_engine = _create_market_engine(effective_source, config, codes)
+            market_engine.run_backtest(
+                config, data_bundle, signal_engine, run_dir,
+                bars_per_year=bars_per_year,
+            )
+    except BacktestExecutionError as exc:
+        print(json.dumps({"error": exc.as_dict()}, ensure_ascii=False))
+        sys.exit(1)
+    except ValueError as exc:
+        print(json.dumps({
+            "error": {
+                "code": "invalid_backtest_input",
+                "message": str(exc),
+                "stage": "data_or_execution",
+            },
+        }, ensure_ascii=False))
+        sys.exit(1)
 
 
 def _create_market_engine(source: str, config: dict, codes: List[str]):
@@ -677,6 +695,55 @@ def _sanitize_data_map(data_map: dict) -> dict:
         The same mapping with each frame's invalid bars removed.
     """
     return {code: validate_ohlc(frame) for code, frame in data_map.items()}
+
+
+def build_data_bundle(
+    config: dict,
+    loader: Any | None,
+    *,
+    data_map: dict[str, pd.DataFrame] | None = None,
+) -> DataBundle:
+    """Fetch at most once, sanitize/enrich, then freeze the backtest input."""
+    if data_map is None:
+        if loader is None:
+            raise ValueError("loader is required when no pre-fetched data_map is supplied")
+        data_map = loader.fetch(
+            config.get("codes", []),
+            config.get("start_date", ""),
+            config.get("end_date", ""),
+            fields=config.get("extra_fields") or None,
+            interval=config.get("interval", "1D"),
+        )
+    sanitized = {
+        symbol: frame
+        for symbol, frame in _sanitize_data_map(data_map).items()
+        if not frame.empty
+    }
+    if not sanitized:
+        raise ValueError("No data fetched")
+
+    from backtest.engines.base import _maybe_enrich_events, _maybe_enrich_fundamentals
+
+    enriched = _maybe_enrich_fundamentals(sanitized, config)
+    enriched = _maybe_enrich_events(enriched, config)
+    currencies = {
+        str((frame.attrs.get("vibe_metadata") or {}).get("currency") or "").upper()
+        for frame in enriched.values()
+    } - {""}
+    configured_base = str(config.get("base_currency") or "").strip().upper()
+    if configured_base:
+        base_currency = configured_base
+    elif len(currencies) <= 1:
+        base_currency = next(iter(currencies), "USD")
+    else:
+        raise ValueError(
+            f"cross-currency backtest requires base_currency; found {sorted(currencies)}"
+        )
+    return DataBundle.from_frames(
+        enriched,
+        base_currency=base_currency,
+        fx_rates=config.get("fx_rates") or {},
+    )
 
 
 class _AutoLoader:

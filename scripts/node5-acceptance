@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Node 5 deterministic backtest-correctness acceptance gate.
+set -u
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHON_BIN=${VIBE_PYTHON:-$ROOT/.venv/bin/python}
+MODE=${1:---full}
+RESULT=0
+COVERAGE_JSON=${TMPDIR:-/tmp}/vibe-node5-coverage-$$.json
+trap 'rm -f "$COVERAGE_JSON"' EXIT
+
+case "$MODE" in --quick|--full) ;; *) echo "Usage: scripts/node5-acceptance [--quick|--full]" >&2; exit 2 ;; esac
+
+run_step() {
+  label=$1; shift
+  printf '\n== %s ==\n' "$label"
+  if "$@"; then printf '[PASS] %s\n' "$label"; else printf '[FAIL] %s\n' "$label" >&2; RESULT=1; fi
+}
+
+cd "$ROOT" || exit 1
+export PYTHONPATH="$ROOT/agent${PYTHONPATH:+:$PYTHONPATH}"
+
+run_step "Backend exact collection gate (4428)" \
+  "$PYTHON_BIN" scripts/check_node0_collection.py \
+  wiki/docs/upgrade/node-2-known-collection-errors.txt 4428
+run_step "Node 5 immutable-data, timeline, ledger, sentinel, and manifest contracts" \
+  "$PYTHON_BIN" -m pytest -q agent/tests/test_node5_backtest_correctness.py
+run_step "Backtest engine and metric compatibility regressions" \
+  "$PYTHON_BIN" -m pytest -q \
+  agent/tests/test_models.py agent/tests/test_metrics.py \
+  agent/tests/test_engine_robustness.py agent/tests/test_run_card.py \
+  agent/tests/test_base_engine.py agent/tests/test_china_a_engine.py \
+  agent/tests/test_china_futures_engine.py agent/tests/test_crypto_engine.py \
+  agent/tests/test_forex_engine.py agent/tests/test_global_equity_engine.py \
+  agent/tests/test_global_futures_engine.py agent/tests/test_position_sizing.py \
+  agent/tests/test_validation.py agent/tests/test_trade_journal.py
+run_step "Node 5 correctness-core coverage execution" \
+  "$PYTHON_BIN" -m pytest -q \
+  agent/tests/test_node5_backtest_correctness.py agent/tests/test_metrics.py \
+  --cov=backtest.data_bundle --cov=backtest.lookahead \
+  --cov=backtest.manifest --cov=backtest.metrics --cov-branch \
+  --cov-report="json:$COVERAGE_JSON" --cov-report=term
+run_step "Node 5 line>=95% branch>=90% coverage gate" \
+  "$PYTHON_BIN" scripts/check-node5-coverage.py "$COVERAGE_JSON" 95 90
+run_step "Node 5 changed-surface Ruff gate" "$PYTHON_BIN" -m ruff check \
+  agent/backtest/data_bundle.py agent/backtest/lookahead.py agent/backtest/manifest.py \
+  agent/backtest/models.py agent/backtest/metrics.py agent/backtest/runner.py \
+  agent/backtest/engines/base.py agent/backtest/engines/options_portfolio.py \
+  agent/backtest/engines/crypto.py agent/backtest/engines/forex.py \
+  agent/backtest/engines/composite.py agent/tests/test_node5_backtest_correctness.py \
+  agent/tests/test_engine_robustness.py agent/tests/test_base_engine.py \
+  agent/tests/test_run_card.py scripts/check-node5-coverage.py
+run_step "Whitespace and conflict-marker gate" git diff --check
+
+if [ "$MODE" = "--full" ]; then
+  run_step "Backend full regression" "$PYTHON_BIN" -m pytest -q --tb=short
+  run_step "Frontend production build" sh -c 'cd "$1/frontend" && npm run build' _ "$ROOT"
+  run_step "Frontend exact gate (28 files, 227 tests)" "$PYTHON_BIN" \
+    scripts/check_node0_frontend.py wiki/docs/upgrade/node-2-known-frontend-failures.txt 28 227
+fi
+
+printf '\nNode 5 acceptance %s exit: %s\n' "$MODE" "$RESULT"
+exit "$RESULT"

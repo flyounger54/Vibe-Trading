@@ -51,7 +51,8 @@ def win_rate_and_stats(trades: List[TradeRecord]) -> Dict[str, float]:
 
     Returns:
         Dict with win_rate, profit_loss_ratio, max_consecutive_loss,
-        avg_holding_bars, profit_factor.
+        avg_holding_bars, avg_holding_days, profit_factor. P&L statistics use
+        net-after-fee ``TradeRecord.pnl`` values.
     """
     if not trades:
         return {
@@ -59,6 +60,7 @@ def win_rate_and_stats(trades: List[TradeRecord]) -> Dict[str, float]:
             "profit_loss_ratio": 0.0,
             "max_consecutive_loss": 0,
             "avg_holding_bars": 0.0,
+            "avg_holding_days": 0.0,
             "profit_factor": 0.0,
         }
 
@@ -85,13 +87,24 @@ def win_rate_and_stats(trades: List[TradeRecord]) -> Dict[str, float]:
             cur_consec = 0
 
     hold_bars = [t.holding_bars for t in trades if t.holding_bars > 0]
-    avg_holding = float(np.mean(hold_bars)) if hold_bars else 0.0
+    avg_holding_bars = float(np.mean(hold_bars)) if hold_bars else 0.0
+    hold_days = []
+    for trade in trades:
+        if trade.holding_days is not None:
+            hold_days.append(float(trade.holding_days))
+        else:
+            try:
+                hold_days.append(float((trade.exit_time - trade.entry_time).total_seconds() / 86400))
+            except (AttributeError, TypeError, ValueError):
+                continue
+    avg_holding_days = float(np.mean(hold_days)) if hold_days else 0.0
 
     return {
         "win_rate": win_rate,
         "profit_loss_ratio": round(profit_loss_ratio, 4),
         "max_consecutive_loss": max_consec,
-        "avg_holding_bars": round(avg_holding, 1),
+        "avg_holding_bars": round(avg_holding_bars, 1),
+        "avg_holding_days": round(avg_holding_days, 4),
         "profit_factor": round(profit_factor, 4),
     }
 
@@ -223,7 +236,14 @@ def calc_metrics(
         "profit_loss_ratio": trade_stats["profit_loss_ratio"],
         "profit_factor": trade_stats["profit_factor"],
         "max_consecutive_loss": trade_stats["max_consecutive_loss"],
-        "avg_holding_days": trade_stats["avg_holding_bars"],
+        "avg_holding_bars": trade_stats["avg_holding_bars"],
+        "avg_holding_days": trade_stats["avg_holding_days"],
+        "net_profit": round(sum(trade.pnl for trade in trades), 8),
+        "gross_profit": round(sum(
+            trade.gross_pnl if trade.gross_pnl is not None else trade.pnl + trade.commission
+            for trade in trades
+        ), 8),
+        "total_commission": round(sum(trade.commission for trade in trades), 8),
         "trade_count": len(trades),
         "benchmark_return": round(bench_return, 6),
         "excess_return": round(excess, 6),
@@ -281,6 +301,8 @@ def _empty_metrics(initial_cash: float) -> Dict[str, Any]:
         "total_return": 0, "annual_return": 0, "max_drawdown": 0,
         "sharpe": 0, "calmar": 0, "sortino": 0,
         "win_rate": 0, "profit_loss_ratio": 0, "profit_factor": 0,
-        "max_consecutive_loss": 0, "avg_holding_days": 0, "trade_count": 0,
+        "max_consecutive_loss": 0, "avg_holding_bars": 0,
+        "avg_holding_days": 0, "net_profit": 0, "gross_profit": 0,
+        "total_commission": 0, "trade_count": 0,
         "benchmark_return": 0, "excess_return": 0, "information_ratio": 0,
     }

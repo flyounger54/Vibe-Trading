@@ -23,7 +23,7 @@ from backtest.engines.base import _align
 from backtest.engines import base as base_engine
 from backtest.engines.china_a import ChinaAEngine
 from backtest.loaders.base import validate_date_range
-from backtest.runner import BacktestConfigSchema
+from backtest.runner import BacktestConfigSchema, build_data_bundle
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +94,8 @@ class TestFfillLimit:
 
 
 class TestSymbolIsolation:
-    def test_one_symbol_error_doesnt_crash_backtest(self) -> None:
-        """If rebalance fails for one symbol, other symbols still execute."""
+    def test_one_symbol_error_fails_backtest(self) -> None:
+        """A rebalance error must abort instead of producing a partial-success ledger."""
         dates = pd.bdate_range("2025-01-01", periods=10)
         df_good = pd.DataFrame(
             {
@@ -122,18 +122,19 @@ class TestSymbolIsolation:
         # Patch _rebalance to throw for BAD only
         original_rebalance = ChinaAEngine._rebalance
 
-        def _exploding_rebalance(self, symbol, target_weight, df, ts, equity):
+        def _exploding_rebalance(
+            self, symbol, target_weight, df, ts, equity, decision_ts=None,
+        ):
             if symbol == "BAD":
                 raise RuntimeError("Simulated failure for BAD")
-            return original_rebalance(self, symbol, target_weight, df, ts, equity)
+            return original_rebalance(
+                self, symbol, target_weight, df, ts, equity,
+                decision_ts=decision_ts,
+            )
 
         with patch.object(ChinaAEngine, "_rebalance", _exploding_rebalance):
-            # Should NOT raise — exception is caught internally
-            engine._execute_bars(dates, data_map, close_df, target_pos, valid_codes)
-
-        # GOOD should have traded despite BAD exploding
-        assert len(engine.trades) > 0
-        assert all(t.symbol == "GOOD" for t in engine.trades)
+            with pytest.raises(RuntimeError, match="Simulated failure for BAD"):
+                engine._execute_bars(dates, data_map, close_df, target_pos, valid_codes)
 
     def test_backtest_enriches_data_map_with_configured_fundamental_fields(
         self,
@@ -175,16 +176,18 @@ class TestSymbolIsolation:
         monkeypatch.setattr(base_engine, "enrich_price_frames_with_fundamentals", fake_enrich, raising=False)
 
         engine = ChinaAEngine({"initial_cash": 1_000_000})
+        config = {
+            "codes": ["000001.SZ"],
+            "start_date": "2024-04-01",
+            "end_date": "2024-04-30",
+            "source": "tushare",
+            "fundamental_fields": {"income": ["total_revenue"]},
+            "initial_cash": 1_000_000,
+        }
+        bundle = build_data_bundle(config, FakeLoader())
         engine.run_backtest(
-            {
-                "codes": ["000001.SZ"],
-                "start_date": "2024-04-01",
-                "end_date": "2024-04-30",
-                "source": "tushare",
-                "fundamental_fields": {"income": ["total_revenue"]},
-                "initial_cash": 1_000_000,
-            },
-            FakeLoader(),
+            config,
+            bundle,
             SignalEngine(),
             tmp_path,
         )
@@ -225,16 +228,18 @@ class TestSymbolIsolation:
         monkeypatch.setattr("backtest.benchmark.resolve_benchmark", fake_resolve_benchmark)
 
         engine = ChinaAEngine({"initial_cash": 1_000_000})
+        config = {
+            "codes": ["000001.SZ"],
+            "start_date": "2024-04-01",
+            "end_date": "2024-04-30",
+            "source": "tushare",
+            "benchmark": "000300.SH",
+            "initial_cash": 1_000_000,
+        }
+        bundle = build_data_bundle(config, FakeLoader())
         metrics = engine.run_backtest(
-            {
-                "codes": ["000001.SZ"],
-                "start_date": "2024-04-01",
-                "end_date": "2024-04-30",
-                "source": "tushare",
-                "benchmark": "000300.SH",
-                "initial_cash": 1_000_000,
-            },
-            FakeLoader(),
+            config,
+            bundle,
             SignalEngine(),
             tmp_path,
         )

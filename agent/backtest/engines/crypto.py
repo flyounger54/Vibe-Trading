@@ -67,7 +67,8 @@ class CryptoEngine(BaseEngine):
             symbol, bar, timestamp, self.positions,
             self.funding_rate, self._funding_applied, self._funding_daily_done,
         )
-        self.capital -= fee
+        if fee:
+            self._apply_instrument_cash(symbol, -fee, timestamp, "funding")
 
         if check_crypto_liquidation(symbol, bar, self.positions):
             pos = self.positions.get(symbol)

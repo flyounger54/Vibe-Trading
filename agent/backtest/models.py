@@ -22,7 +22,10 @@ class Position:
         size: Number of shares / coins.
         leverage: Effective leverage (1 for spot/stocks).
         entry_bar_idx: Index in the dates array at entry (for holding_bars).
-        entry_commission: Commission paid at entry.
+        entry_commission: Commission paid at entry in base currency.
+        entry_fx_rate: Base-currency value of one instrument-currency unit.
+        entry_margin_local: Margin reserved in instrument currency.
+        entry_margin_base: Margin reserved at entry in base currency.
     """
 
     symbol: str
@@ -33,6 +36,9 @@ class Position:
     leverage: float = 1.0
     entry_bar_idx: int = 0
     entry_commission: float = 0.0
+    entry_fx_rate: float = 1.0
+    entry_margin_local: float | None = None
+    entry_margin_base: float | None = None
 
 
 @dataclass(frozen=True)
@@ -48,10 +54,12 @@ class TradeRecord:
         exit_time: Exit timestamp.
         size: Number of shares / coins traded.
         leverage: Effective leverage.
-        pnl: Realised profit/loss in cash terms.
+        pnl: Net realised profit/loss after all entry and exit commissions.
+        gross_pnl: Realised profit/loss before commissions.
         pnl_pct: Realised P&L as percentage of margin.
         exit_reason: Why closed (signal / liquidation / end_of_backtest).
         holding_bars: Number of bars held.
+        holding_days: Calendar holding duration in days.
         commission: Total commission (entry + exit).
     """
 
@@ -68,6 +76,11 @@ class TradeRecord:
     exit_reason: str
     holding_bars: int
     commission: float
+    gross_pnl: float | None = None
+    holding_days: float | None = None
+    currency: str = ""
+    base_currency: str = ""
+    fx_rate: float = 1.0
 
 
 @dataclass(frozen=True)

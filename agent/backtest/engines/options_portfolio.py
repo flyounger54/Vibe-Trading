@@ -158,6 +158,14 @@ def iv_smile_adjustment(S: float, K: float, base_iv: float,
 # --- Option positions ---
 
 
+def _utc_timestamp(value: object) -> pd.Timestamp:
+    """Normalize option dates to the backtest bundle's UTC timeline."""
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
 class OptionPosition:
     """A single option leg position.
 
@@ -176,7 +184,7 @@ class OptionPosition:
                  underlying_code: str):
         self.option_type = option_type
         self.strike = strike
-        self.expiry = pd.Timestamp(expiry)
+        self.expiry = _utc_timestamp(expiry)
         self.qty = qty
         self.entry_price = entry_price
         self.entry_date = entry_date
@@ -224,7 +232,7 @@ class OptionPosition:
 
 def run_options_backtest(
     config: Dict[str, Any],
-    loader: Any,
+    data_bundle: Any,
     engine: Any,
     run_dir: Path,
     bars_per_year: int = 252,
@@ -241,7 +249,7 @@ def run_options_backtest(
     Args:
         config: Backtest config; must include codes, start_date, end_date, initial_cash,
                 and options_config (risk_free_rate, iv_source).
-        loader: DataLoader instance (must have a fetch method).
+        data_bundle: Immutable, content-addressed underlying-price snapshot.
         engine: OptionsSignalEngine instance (generate method returns a list of trade instructions).
         run_dir: Run directory path.
         bars_per_year: Bars per year.
@@ -253,8 +261,6 @@ def run_options_backtest(
         SystemExit: When no data is fetched.
     """
     codes = config.get("codes", [])
-    start_date = config.get("start_date", "")
-    end_date = config.get("end_date", "")
     initial_cash = config.get("initial_cash", 1_000_000)
     commission = config.get("commission", 0.001)
     options_cfg = config.get("options_config", {})
@@ -264,11 +270,20 @@ def run_options_backtest(
     iv_skew = options_cfg.get("iv_skew", 0.0)         # v2: smile skew param (0 = flat)
     iv_curvature = options_cfg.get("iv_curvature", 0.0)  # v2: smile curvature
 
-    # Load underlying data
-    data_map = loader.fetch(codes, start_date, end_date)
-    if not data_map:
-        print(json.dumps({"error": "No data fetched"}))
-        sys.exit(1)
+    from backtest.data_bundle import DataBundle
+
+    if not isinstance(data_bundle, DataBundle):
+        raise TypeError("run_options_backtest requires an immutable DataBundle")
+    non_base = [
+        symbol for symbol in data_bundle.symbols
+        if data_bundle.currency(symbol) != data_bundle.base_currency
+    ]
+    if non_base:
+        raise ValueError(
+            "options backtest requires underlying currencies to match base_currency; "
+            f"unsupported symbols: {non_base}"
+        )
+    data_map = data_bundle.materialize()
 
     # Compute implied volatility (approximated by historical volatility)
     iv_map: Dict[str, pd.Series] = {}
@@ -389,7 +404,7 @@ def run_options_backtest(
                 expiry = leg.get("expiry", "")
                 qty = leg.get("qty", 1)
 
-                expiry_ts = pd.Timestamp(expiry)
+                expiry_ts = _utc_timestamp(expiry)
                 T = max((expiry_ts - ts).days / 365.0, 0.001)
 
                 # Apply IV smile adjustment (v2) if configured
@@ -522,13 +537,26 @@ def run_options_backtest(
     pd.DataFrame(greeks_records).to_csv(out / "greeks.csv", index=False)
     pd.DataFrame([metrics]).to_csv(out / "metrics.csv", index=False)
 
+    from backtest.manifest import write_run_manifest
     from backtest.run_card import write_run_card
+    strategy_path = run_dir / "code" / "signal_engine.py"
+    write_run_manifest(
+        run_dir, config, data_bundle, strategy_path=strategy_path,
+    )
+    configured_sources = config.get(
+        "_run_card_effective_sources", config.get("source", ""),
+    )
+    data_sources = (
+        [str(source) for source in configured_sources]
+        if isinstance(configured_sources, list)
+        else [str(configured_sources)]
+    )
     write_run_card(
         run_dir,
         config,
         metrics,
-        data_sources=[str(getattr(loader, "name", config.get("source", "")))],
-        strategy_path=run_dir / "code" / "signal_engine.py",
+        data_sources=[source for source in data_sources if source],
+        strategy_path=strategy_path,
     )
 
     print(json.dumps(metrics, indent=2))
@@ -557,7 +585,7 @@ def _find_matching_position(
     Returns:
         Matching position, or None if not found.
     """
-    expiry_ts = pd.Timestamp(expiry)
+    expiry_ts = _utc_timestamp(expiry)
     for pos in positions:
         if (pos.underlying_code == underlying
                 and pos.option_type == option_type

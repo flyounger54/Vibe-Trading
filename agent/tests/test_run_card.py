@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from backtest.data_bundle import DataBundle
 from backtest.run_card import write_run_card
 from src.core.runner import Runner
 
@@ -273,12 +274,6 @@ def test_options_backtest_writes_run_card(tmp_path: Path) -> None:
         index=dates,
     )
 
-    class FakeLoader:
-        name = "yfinance"
-
-        def fetch(self, codes, start_date, end_date):
-            return {"SPY": bars.copy()}
-
     class SignalEngine:
         def generate(self, data_map):
             return [
@@ -305,7 +300,7 @@ def test_options_backtest_writes_run_card(tmp_path: Path) -> None:
             "engine": "options",
             "initial_cash": 100_000,
         },
-        FakeLoader(),
+        DataBundle.from_frames({"SPY": bars}, base_currency="USD"),
         SignalEngine(),
         tmp_path,
     )

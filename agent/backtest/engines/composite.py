@@ -165,7 +165,8 @@ class CompositeEngine(BaseEngine):
                 crypto_sub.funding_rate,
                 self._funding_applied, self._funding_daily_done,
             )
-            self.capital -= fee
+            if fee:
+                self._apply_instrument_cash(symbol, -fee, timestamp, "funding")
 
             if check_crypto_liquidation(symbol, bar, self.positions):
                 pos = self.positions.get(symbol)
@@ -181,4 +182,5 @@ class CompositeEngine(BaseEngine):
                     symbol, timestamp, self.positions,
                     forex_sub.lot_size, self._last_swap_dates,
                 )
-                self.capital += swap
+                if swap:
+                    self._apply_instrument_cash(symbol, swap, timestamp, "swap")

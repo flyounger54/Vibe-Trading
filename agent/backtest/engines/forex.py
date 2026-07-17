@@ -129,7 +129,8 @@ class ForexEngine(BaseEngine):
             symbol, timestamp, self.positions,
             self.lot_size, self._last_swap_dates,
         )
-        self.capital += swap
+        if swap:
+            self._apply_instrument_cash(symbol, swap, timestamp, "swap")
 
     def get_contract_multiplier(self, symbol: str) -> float:
         """Forex: multiplier is 1.0 (size is in currency units)."""
