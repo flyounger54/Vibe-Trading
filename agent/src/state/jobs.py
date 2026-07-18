@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, List, Protocol
 
 from src.state.database import StateDatabase
 
@@ -186,6 +186,16 @@ class SQLiteJobQueue:
                 (queue_name, limit),
             ).fetchall()
         return [_from_row(row) for row in rows]
+
+    def status_counts(self, queue_name: str) -> dict[str, int]:
+        """Return durable job counts grouped by lifecycle status."""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM runtime_jobs "
+                "WHERE queue_name=? GROUP BY status",
+                (queue_name,),
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
 
     def claim(
         self, queue_name: str, worker_id: str, *, lease_seconds: float
@@ -422,7 +432,7 @@ class SQLiteJobQueue:
         job = self.get(job_id)
         return bool(job and (job.cancel_requested or job.status == JobStatus.CANCELLED))
 
-    def recover_expired(self, queue_name: str | None = None) -> list[str]:
+    def recover_expired(self, queue_name: str | None = None) -> List[str]:
         now = self._now()
         with self.database.transaction() as connection:
             return self._recover_expired_in_transaction(connection, now, queue_name)
@@ -430,7 +440,7 @@ class SQLiteJobQueue:
     @staticmethod
     def _recover_expired_in_transaction(
         connection: Any, now: float, queue_name: str | None
-    ) -> list[str]:
+    ) -> List[str]:
         where = "status=? AND lease_expires_at IS NOT NULL AND lease_expires_at<=?"
         params: list[Any] = [JobStatus.RUNNING.value, now]
         if queue_name is not None:

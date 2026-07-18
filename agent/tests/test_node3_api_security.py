@@ -49,7 +49,17 @@ def test_only_liveness_endpoints_are_anonymous(security_env) -> None:
             assert client.get(path).status_code == 401, path
 
 
-def test_html_accept_header_cannot_bypass_api_auth(security_env) -> None:
+def test_html_accept_header_cannot_bypass_api_auth(
+    security_env, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    frontend_dist = tmp_path / "frontend-dist"
+    frontend_dist.mkdir()
+    (frontend_dist / "index.html").write_text(
+        "<!doctype html><html><body>Vibe-Trading</body></html>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(api_server, "_FRONTEND_DIST", frontend_dist)
+
     with _local_client() as client:
         for path in ("/health", "/runs", "/industry-chain/list", "/api"):
             response = client.get(path, headers={"Accept": "text/html"})

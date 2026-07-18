@@ -2,83 +2,229 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.11.28"
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   backend:
+    name: Backend / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install exactly from uv.lock
+        run: uv sync --locked --extra dev
+      - name: Test offline backend
+        run: >-
+          uv run --locked --extra dev pytest
+          --ignore=agent/tests/e2e_backtest
+          --ignore=agent/tests/test_e2e_harness_v2.py
+          --tb=short -q
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.lock
-          pip install --no-deps -e .
-
-      - name: Syntax check
-        run: |
-          cd agent
-          python -m compileall -q cli
-          python -m py_compile api_server.py
-          python -m py_compile mcp_server.py
-          python -m py_compile src/agent/loop.py
-          python -m py_compile src/tools/__init__.py
-          python -m py_compile backtest/runner.py
-
-      - name: Run tests
-        # test_e2e_harness_v2.py is gated by VIBE_TRADING_RUN_LIVE_E2E
-        # (real-LLM only); list --ignore here so CI's intent is explicit and
-        # the suite never silently switches state on env presence.
-        run: |
-          python scripts/check_node0_collection.py wiki/docs/upgrade/node-2-known-collection-errors.txt 4401
-          python scripts/generate-api-contracts --check
-          pytest --ignore=agent/tests/e2e_backtest --ignore=agent/tests/test_e2e_harness_v2.py --cov=agent --cov-report=term-missing --cov-report=xml --tb=short -q
-
-  frontend:
+  quality:
+    name: Quality and coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - name: Lock drift and syntax
+        run: |
+          uv lock --check
+          uv run python -m compileall -q agent
+      - name: Ruff changed and critical runtime surfaces
+        run: >-
+          uv run --locked --extra dev ruff check
+          agent/api_server.py agent/src/observability.py
+          agent/src/security/api_security.py agent/src/contracts/errors.py
+          agent/src/state/database.py agent/src/state/jobs.py agent/src/state/operations.py
+          agent/src/session/service.py agent/src/agent/loop.py agent/src/core/runner.py
+          agent/backtest/loaders/base.py agent/backtest/loaders/platform.py
+          scripts/state-admin scripts/check-node11-coverage.py scripts/node11-performance
+      - name: Mypy key runtime boundaries
+        run: >-
+          uv run --locked --extra dev mypy --ignore-missing-imports --follow-imports=skip
+          agent/src/observability.py agent/src/contracts/errors.py
+          agent/src/security/api_security.py agent/src/state/database.py agent/src/state/jobs.py
+      - name: Coverage with branch data
+        run: >-
+          uv run --locked --extra dev pytest
+          --ignore=agent/tests/e2e_backtest
+          --ignore=agent/tests/test_e2e_harness_v2.py
+          --cov=agent --cov-branch
+          --cov-report=json:coverage.json --cov-report=xml:coverage.xml
+          --tb=short -q
+      - name: Enforce Node 11 backend coverage targets
+        run: python scripts/check-node11-coverage.py coverage.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: backend-coverage
+          path: |
+            coverage.json
+            coverage.xml
 
-      - uses: actions/setup-node@v6
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
-      - name: Frontend build
+      - name: Locked install, test, coverage and build
+        working-directory: frontend
         run: |
-          cd frontend
           npm ci
+          npm run test:coverage
           npm run build
+      - name: Frontend coverage no-regression gate
+        run: node scripts/check-node11-frontend-coverage.mjs frontend/coverage/coverage-summary.json
 
-      - name: Frontend tests
-        run: python scripts/check_node0_frontend.py wiki/docs/upgrade/node-1-known-frontend-failures.txt 28 227
+  contracts:
+    name: API contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run --locked python scripts/generate-api-contracts --check
+
+  security:
+    name: Security gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv sync --locked --extra dev
+      - name: Static security scan (High severity gate)
+        run: uv run --locked --extra dev bandit -q -lll -r agent/src agent/api_server.py
+      - name: Locked Python dependency audit
+        run: |
+          uv export --locked --no-dev --no-emit-project --quiet --format requirements.txt --output-file /tmp/requirements-audit.txt
+          uv run --locked --extra dev pip-audit -r /tmp/requirements-audit.txt --progress-spinner off
+      - name: Frontend dependency audit
+        working-directory: frontend
+        run: npm audit --audit-level=high
+      - name: Secret history scan
+        uses: trufflesecurity/trufflehog@7c0734f987ad0bb30ee8da210773b800ee2016d3 # v3.93.4
+        with:
+          extra_args: --results=verified,unknown
 
   sandbox:
+    name: Isolated strategy worker
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - run: scripts/test-sandbox-runtime
 
-      - name: Build and attack-test isolated strategy worker
-        run: scripts/test-sandbox-runtime
+  container:
+    name: Production container
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          load: true
+          tags: vibe-trading:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Non-root, cold start, readiness and graceful shutdown
+        run: scripts/test-production-container vibe-trading:ci
+      - name: Block Critical or High image vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: vibe-trading:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH
+
+  performance:
+    name: Deterministic performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run --locked python scripts/node11-performance --output build/node11-performance.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: node11-performance
+          path: build/node11-performance.json
+
+  artifact:
+    name: Python distribution artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv build
+      - run: uvx twine check dist/*.whl dist/*.tar.gz
+      - name: Generate Python dependency SBOM
+        run: uv export --locked --no-dev --format cyclonedx1.5 --output-file dist/python-sbom.cdx.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: python-dist
+          path: dist/

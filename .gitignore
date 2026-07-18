@@ -6,6 +6,7 @@ __pycache__/
 
 # Coverage reports
 .coverage
+coverage.json
 coverage.xml
 
 # Node dependencies (root level)
@@ -30,6 +31,7 @@ agent/uploads/
 agent/tests/*_result.json
 .ruff_cache/
 frontend/dist/
+frontend/coverage/
 frontend/tsconfig.tsbuildinfo
 wiki/node_modules/
 wiki/dist/

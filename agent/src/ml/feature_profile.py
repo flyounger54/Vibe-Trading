@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -123,7 +123,13 @@ def load_feature_profile(
         raise FileNotFoundError(f"FeatureProfile not found: {path}")
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["preprocess_config"] = PreprocessConfig(**data["preprocess_config"])
+    preprocess_data = dict(data["preprocess_config"])
+    # JSON has no tuple type.  Restore the immutable configuration contract
+    # instead of leaking a list into a frozen ``PreprocessConfig`` after load.
+    limits = preprocess_data.get("winsorize_limits")
+    if isinstance(limits, list):
+        preprocess_data["winsorize_limits"] = tuple(limits)
+    data["preprocess_config"] = PreprocessConfig(**preprocess_data)
     return FeatureProfile(**data)
 
 

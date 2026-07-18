@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Operational state backup, verification, recovery and cache cleanup CLI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "agent"))
+
+from src.state.database import default_state_db_path  # noqa: E402
+from src.state.operations import backup_database, clean_loader_cache, restore_database, verify_database  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    backup = commands.add_parser("backup")
+    backup.add_argument("target", type=Path)
+    backup.add_argument("--database", type=Path, default=default_state_db_path())
+    verify = commands.add_parser("verify")
+    verify.add_argument("database", type=Path)
+    restore = commands.add_parser("restore")
+    restore.add_argument("backup", type=Path)
+    restore.add_argument("--database", type=Path, default=default_state_db_path())
+    restore.add_argument("--confirm", action="store_true", help="required because restore replaces active state")
+    cache = commands.add_parser("cache-cleanup")
+    cache.add_argument("--root", type=Path, default=Path.home() / ".vibe-trading" / "cache" / "loaders")
+    cache.add_argument("--older-than-days", type=float, default=30)
+    cache.add_argument("--apply", action="store_true", help="delete candidates; default is dry-run")
+    args = parser.parse_args()
+
+    if args.command == "backup":
+        result = backup_database(args.database, args.target)
+    elif args.command == "verify":
+        result = verify_database(args.database)
+    elif args.command == "restore":
+        if not args.confirm:
+            parser.error("restore requires --confirm")
+        result = restore_database(args.backup, args.database)
+    else:
+        result = clean_loader_cache(
+            args.root,
+            older_than_seconds=args.older_than_days * 86400,
+            dry_run=not args.apply,
+        )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

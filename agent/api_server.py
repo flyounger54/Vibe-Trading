@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, UploadFile, status
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -64,6 +64,7 @@ from src.security.api_security import (
     rate_limiter,
 )
 from src.security.boundaries import validate_identifier, validate_outbound_url
+from src.observability import configure_structured_logging, metrics_payload, observe_http_request
 
 if TYPE_CHECKING:
     from src.scheduled_research.executor import ScheduledResearchExecutor
@@ -707,6 +708,7 @@ async def _run_startup_preflight() -> None:
     """Run preflight checks on server startup."""
     from src.preflight import run_preflight
 
+    configure_structured_logging()
     _configured_api_key()
     run_preflight(console)
     _start_scheduled_research_executor()
@@ -1004,10 +1006,33 @@ async def healthz() -> Dict[str, str]:
 
 
 @app.api_route("/readyz", methods=["GET", "HEAD"], include_in_schema=False)
-async def readyz() -> Dict[str, str]:
-    """Readiness probe; startup key material must be available."""
+async def readyz():
+    """Readiness probe for key material, state migrations and job workers."""
     _configured_api_key()
-    return {"status": "ready"}
+    service = _get_session_service()
+    if service is None:
+        return {"status": "ready", "session_runtime": "disabled"}
+    snapshot = service.readiness_snapshot()
+    payload = {"status": "ready" if snapshot["ready"] else "not_ready", **snapshot}
+    if not snapshot["ready"]:
+        return JSONResponse(payload, status_code=503)
+    return payload
+
+
+@app.get("/metrics", include_in_schema=False, dependencies=[Depends(require_auth)])
+async def metrics() -> Response:
+    """Prometheus exposition endpoint; protected because it reveals runtime load."""
+    service = _get_session_service()
+    if service is None:
+        payload, content_type = metrics_payload()
+    else:
+        snapshot = service.readiness_snapshot()
+        payload, content_type = metrics_payload(
+            queue_counts=snapshot["queue"]["counts"],
+            configured_workers=snapshot["workers"]["configured"],
+            live_workers=snapshot["workers"]["live"],
+        )
+    return Response(payload, headers={"Content-Type": content_type})
 
 
 @app.middleware("http")
@@ -1100,6 +1125,8 @@ async def _unified_api_security_boundary(request: Request, call_next):
     finally:
         if idempotency_claim and (response is None or response.status_code >= 500):
             idempotency_registry.release(idempotency_claim)
+        elapsed_seconds = time.monotonic() - started
+        response_status = response.status_code if response is not None else 500
         try:
             append_audit_event(
                 {
@@ -1107,13 +1134,29 @@ async def _unified_api_security_boundary(request: Request, call_next):
                     "method": request.method,
                     "path": request.url.path,
                     "client": client,
-                    "status": response.status_code if response is not None else 500,
+                    "status": response_status,
                     "auth": auth_result,
-                    "elapsed_ms": (time.monotonic() - started) * 1000,
+                    "elapsed_ms": elapsed_seconds * 1000,
                 }
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Security audit append failed: %s", exc)
+        try:
+            route = request.scope.get("route")
+            route_path = getattr(route, "path", "__unmatched__")
+            observe_http_request(request.method, route_path, response_status, elapsed_seconds)
+            logger.info(
+                "http_request",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response_status,
+                    "elapsed_ms": round(elapsed_seconds * 1000, 3),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Request metrics/logging failed: %s", exc)
 
 
 def build_api_permission_matrix() -> List[Dict[str, Any]]:

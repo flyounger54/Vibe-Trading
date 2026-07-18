@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Build one auditable Node 11 release-candidate observation record."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _load_json(path: Path) -> tuple[dict[str, Any], str | None]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, f"{path}: {exc}"
+    if not isinstance(payload, dict):
+        return {}, f"{path}: expected a JSON object"
+    return payload, None
+
+
+def _trivy_counts(payload: dict[str, Any]) -> tuple[int, int]:
+    critical = 0
+    high = 0
+    for result in payload.get("Results", []):
+        if not isinstance(result, dict):
+            continue
+        for vulnerability in result.get("Vulnerabilities") or []:
+            if not isinstance(vulnerability, dict):
+                continue
+            severity = vulnerability.get("Severity")
+            critical += severity == "CRITICAL"
+            high += severity == "HIGH"
+    return critical, high
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--day", type=int, required=True)
+    parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument("--image-ref", required=True)
+    parser.add_argument("--observed-digest", required=True)
+    parser.add_argument("--run-url", required=True)
+    parser.add_argument("--container-smoke", choices=("passed", "failed"), required=True)
+    parser.add_argument("--restore-drill", choices=("passed", "failed"), required=True)
+    parser.add_argument("--blocking-incidents", type=int, default=0)
+    parser.add_argument("--readiness", type=Path, required=True)
+    parser.add_argument("--performance", type=Path, required=True)
+    parser.add_argument("--trivy", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+
+    readiness, readiness_error = _load_json(args.readiness)
+    performance, performance_error = _load_json(args.performance)
+    trivy, trivy_error = _load_json(args.trivy)
+    critical, high = _trivy_counts(trivy)
+
+    expected_digest = args.image_ref.rsplit("@", 1)[-1] if "@" in args.image_ref else ""
+    samples = readiness.get("samples", 0)
+    successes = readiness.get("successes", 0)
+    queue = performance.get("queue") if isinstance(performance.get("queue"), dict) else {}
+    checks = {
+        "rc_day_in_range": 1 <= args.day <= 7,
+        "candidate_is_commit": bool(COMMIT_RE.fullmatch(args.candidate_sha)),
+        "image_is_immutable": bool(DIGEST_RE.fullmatch(expected_digest)),
+        "observed_digest_matches": args.observed_digest == expected_digest,
+        "workflow_run_is_github_actions": args.run_url.startswith("https://github.com/")
+        and "/actions/runs/" in args.run_url,
+        "container_smoke_passed": args.container_smoke == "passed",
+        "readiness_evidence_loaded": readiness_error is None,
+        "readiness_uptime_100pct": isinstance(samples, int)
+        and samples > 0
+        and successes == samples
+        and readiness.get("accepted") is True,
+        "performance_evidence_loaded": performance_error is None,
+        "performance_gate_passed": performance.get("accepted") is True,
+        "queue_lost_zero": queue.get("lost") == 0,
+        "critical_zero": critical == 0,
+        "high_zero": high == 0,
+        "trivy_evidence_loaded": trivy_error is None,
+        "restore_drill_passed": args.restore_drill == "passed",
+        "blocking_incidents_zero": args.blocking_incidents == 0,
+    }
+    accepted = all(checks.values())
+    payload = {
+        "schema_version": 1,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "rc_day": args.day,
+        "candidate_commit": args.candidate_sha,
+        "image": {"ref": args.image_ref, "digest": args.observed_digest},
+        "workflow_run": args.run_url,
+        "container_smoke": args.container_smoke,
+        "readiness": {
+            "samples": samples,
+            "successes": successes,
+            "uptime_pct": readiness.get("uptime_pct", 0.0),
+            "longest_failure_streak": readiness.get("longest_failure_streak", 0),
+        },
+        "performance": performance,
+        "queue": {
+            "maximum_depth": queue.get("jobs"),
+            "lost": queue.get("lost"),
+        },
+        "security": {"critical": critical, "high": high},
+        "restore_drill": args.restore_drill,
+        "blocking_incidents": args.blocking_incidents,
+        "evidence_errors": [error for error in (readiness_error, performance_error, trivy_error) if error],
+        "checks": checks,
+        "accepted": accepted,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if accepted else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

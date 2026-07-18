@@ -1,0 +1,113 @@
+name: Node 11 RC observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Immutable 40-character candidate commit
+        required: true
+        type: string
+      image_ref:
+        description: Immutable GHCR image reference including @sha256 digest
+        required: true
+        type: string
+      rc_day:
+        description: Observation day
+        required: true
+        type: choice
+        options: ["1", "2", "3", "4", "5", "6", "7"]
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  UV_VERSION: "0.11.28"
+
+jobs:
+  observe:
+    name: RC day ${{ inputs.rc_day }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    concurrency:
+      group: node11-rc-${{ inputs.candidate_sha }}-${{ inputs.rc_day }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.candidate_sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        name: Pull and verify immutable candidate image
+        env:
+          IMAGE_REF: ${{ inputs.image_ref }}
+        run: |
+          case "$IMAGE_REF" in *@sha256:????????????????????????????????????????????????????????????????) ;; *) exit 2 ;; esac
+          docker pull "$IMAGE_REF"
+          observed=$(docker image inspect "$IMAGE_REF" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -F@ 'NF == 2 {print $2; exit}')
+          test -n "$observed"
+          test "$observed" = "${IMAGE_REF##*@}"
+          echo "digest=$observed" >> "$GITHUB_OUTPUT"
+      - id: smoke
+        name: Production container smoke
+        continue-on-error: true
+        run: scripts/test-production-container "${{ inputs.image_ref }}"
+      - id: readiness
+        name: Five-minute readiness soak
+        continue-on-error: true
+        run: >-
+          uv run --locked python scripts/node11-readiness-soak
+          "${{ inputs.image_ref }}" --duration-seconds 300
+          --interval-seconds 5 --output build/node11-rc-readiness.json
+      - id: performance
+        name: Deterministic performance gate
+        continue-on-error: true
+        run: uv run --locked python scripts/node11-performance --output build/node11-rc-performance.json
+      - id: restore
+        name: Backup and atomic restore drill
+        continue-on-error: true
+        run: >-
+          uv run --locked --extra dev pytest -q
+          agent/tests/test_node11_release_engineering.py::test_state_backup_and_atomic_restore_drill
+      - name: Capture vulnerability evidence
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ inputs.image_ref }}
+          format: json
+          output: build/node11-rc-trivy.json
+          exit-code: "0"
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH
+      - id: evidence
+        name: Enforce and write daily RC evidence
+        run: >-
+          uv run --locked python scripts/node11-rc-evidence
+          --day "${{ inputs.rc_day }}"
+          --candidate-sha "${{ inputs.candidate_sha }}"
+          --image-ref "${{ inputs.image_ref }}"
+          --observed-digest "${{ steps.image.outputs.digest }}"
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          --container-smoke "${{ steps.smoke.outcome == 'success' && 'passed' || 'failed' }}"
+          --restore-drill "${{ steps.restore.outcome == 'success' && 'passed' || 'failed' }}"
+          --readiness build/node11-rc-readiness.json
+          --performance build/node11-rc-performance.json
+          --trivy build/node11-rc-trivy.json
+          --output "build/node11-rc-day-${{ inputs.rc_day }}.json"
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: node11-rc-day-${{ inputs.rc_day }}
+          path: build/node11-rc-*.json
+          if-no-files-found: error

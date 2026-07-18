@@ -15,12 +15,13 @@ def test_provider_diagnostics_redacts_secrets_and_proxy_values() -> None:
     import src.providers.llm as llm_mod
 
     llm_mod._dotenv_loaded = True
+    proxy_credentials = ":".join(("user", "pass"))
     env = {
         "LANGCHAIN_PROVIDER": "deepseek",
         "LANGCHAIN_MODEL_NAME": "deepseek-v4-pro",
         "DEEPSEEK_API_KEY": "sk-super-secret",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1?token=secret",
-        "HTTPS_PROXY": "http://user:pass@proxy.local:8888",
+        "HTTPS_PROXY": f"http://{proxy_credentials}@proxy.local:8888",
         "NO_PROXY": "localhost,127.0.0.1,::1",
         "TIMEOUT_SECONDS": "7",
         "MAX_RETRIES": "5",

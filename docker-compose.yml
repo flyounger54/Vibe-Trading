@@ -27,6 +27,7 @@ services:
       - vibe-swarm-runs:/app/agent/.swarm/runs
       - vibe-uploads:/app/agent/uploads
     restart: unless-stopped
+    stop_grace_period: 30s
 
   frontend:
     image: node:20
@@ -37,12 +38,12 @@ services:
       - ./frontend:/app
     environment:
       - VITE_API_URL=http://vibe-trading:8899
-    command: sh -c "npm install && npm run dev -- --host --port 5899"
+    command: sh -c "npm ci && npm run dev -- --host --port 5899"
     profiles:
       - frontend
     depends_on:
       vibe-trading:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   vibe-runs:

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Verify production image identity, cold start, readiness, metrics and SIGTERM.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+IMAGE=${1:-vibe-trading:node11}
+NAME="vibe-node11-$$"
+API_KEY="node11-container-smoke-key-that-is-long-enough"
+PORT=18899
+
+cleanup() {
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  rm -f "$ROOT/.node11-ready.json"
+}
+trap cleanup EXIT INT TERM
+
+USER_ID=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
+case "$USER_ID" in ""|0|root|0:0) echo "image must run as non-root" >&2; exit 1 ;; esac
+
+STARTED=$(date +%s)
+docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8899" \
+  -e API_AUTH_KEY="$API_KEY" -e ENABLE_SESSION_RUNTIME=true "$IMAGE" >/dev/null
+
+ready=0
+for _ in $(seq 1 60); do
+  if curl --fail --silent "http://127.0.0.1:${PORT}/readyz" >"$ROOT/.node11-ready.json"; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+test "$ready" -eq 1
+python -c 'import json,sys; p=json.load(open(sys.argv[1])); assert p["status"] == "ready"' "$ROOT/.node11-ready.json"
+curl --fail --silent -H "Authorization: Bearer ${API_KEY}" \
+  "http://127.0.0.1:${PORT}/metrics" | grep -q 'vibe_http_requests_total'
+ELAPSED=$(($(date +%s) - STARTED))
+test "$ELAPSED" -le 60
+
+docker stop --time 20 "$NAME" >/dev/null
+EXIT_CODE=$(docker inspect "$NAME" --format '{{.State.ExitCode}}')
+test "$EXIT_CODE" -eq 0
+rm -f "$ROOT/.node11-ready.json"
+trap - EXIT INT TERM
+docker rm "$NAME" >/dev/null
+echo "production container smoke passed in ${ELAPSED}s"

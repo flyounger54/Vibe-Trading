@@ -144,6 +144,8 @@ class ConcurrentUpdateError(RuntimeError):
 class StateDatabase:
     """Small SQLite wrapper shared by sessions, jobs, events, swarms and schedules."""
 
+    expected_schema_version = max(version for version, _ in _MIGRATIONS)
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +207,12 @@ class StateDatabase:
     def journal_mode(self) -> str:
         with self.connect() as connection:
             row = connection.execute("PRAGMA journal_mode").fetchone()
+        return str(row[0]).lower()
+
+    def integrity_check(self) -> str:
+        """Return SQLite's quick integrity verdict for readiness and drills."""
+        with self.connect() as connection:
+            row = connection.execute("PRAGMA quick_check").fetchone()
         return str(row[0]).lower()
 
     def upsert_record(

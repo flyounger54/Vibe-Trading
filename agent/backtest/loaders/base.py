@@ -22,6 +22,8 @@ from typing import Callable, Protocol, TypeVar, runtime_checkable
 
 import pandas as pd
 
+from src.observability import record_cache_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -449,10 +451,12 @@ def cached_loader_fetch(
         is_settled = loader_cache_range_is_final(end_date)
         if is_settled or (time.monotonic() - stored_at < _MEMORY_TTL_SECONDS):
             _CACHE_STATS["l1_hits"] += 1
+            record_cache_event("loader_l1", "hit")
             _MEMORY_CACHE.move_to_end(cache_key)
             return df
         _MEMORY_CACHE.pop(cache_key, None)
     _CACHE_STATS["l1_misses"] += 1
+    record_cache_event("loader_l1", "miss")
 
     # L2: Parquet disk cache
     cached = loader_cache_get(
@@ -523,6 +527,7 @@ def _loader_cache_metadata_path(cache_path: Path) -> Path:
 def _read_loader_cache_frame(cache_path: Path) -> pd.DataFrame | None:
     if not cache_path.is_file():
         _CACHE_STATS["l2_misses"] += 1
+        record_cache_event("loader_l2", "miss")
         return None
 
     metadata_path = _loader_cache_metadata_path(cache_path)
@@ -568,6 +573,7 @@ def _read_loader_cache_frame(cache_path: Path) -> pd.DataFrame | None:
     if isinstance(attrs, dict):
         frame.attrs.update(attrs)
     _CACHE_STATS["l2_hits"] += 1
+    record_cache_event("loader_l2", "hit")
     return frame
 
 
@@ -584,6 +590,7 @@ def _remove_corrupt_cache_entry(cache_path: Path) -> None:
     if removed:
         _CACHE_STATS["corrupt_entries_removed"] += 1
     _CACHE_STATS["l2_misses"] += 1
+    record_cache_event("loader_l2", "miss")
 
 
 def _restore_cache_index_dtypes(frame: pd.DataFrame, index_dtypes: object) -> pd.DataFrame:

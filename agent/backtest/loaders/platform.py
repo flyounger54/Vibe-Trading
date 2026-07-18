@@ -18,6 +18,8 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 import pandas as pd
 
+from src.observability import record_provider_request
+
 
 BAR_SCHEMA_VERSION = "bars.v1"
 
@@ -362,6 +364,7 @@ class ProviderRegistry:
         state.total_latency_ms += elapsed_ms
         state.last_error = None
         state.circuit_open_until = 0.0
+        record_provider_request(provider, "success", elapsed_ms / 1000)
 
     def _record_failure(self, provider: str, elapsed_ms: float, error: BaseException) -> None:
         state = self._health_state(provider)
@@ -371,6 +374,7 @@ class ProviderRegistry:
         state.last_error = f"{type(error).__name__}: {error}"
         if state.consecutive_failures >= self.circuit_failure_threshold:
             state.circuit_open_until = time.monotonic() + self.circuit_reset_seconds
+        record_provider_request(provider, "failure", elapsed_ms / 1000)
 
     @staticmethod
     def _capabilities(loader: Any) -> ProviderCapabilities:

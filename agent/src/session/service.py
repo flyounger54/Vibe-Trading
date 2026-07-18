@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 from pathlib import Path
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
 # Dedicated thread pool limited to four concurrent agents to avoid exhausting the default executor.
 _AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent")
+logger = logging.getLogger(__name__)
 
 
 class SessionService:
@@ -253,6 +255,37 @@ class SessionService:
                 raise TimeoutError("Session runtime did not become idle")
             await asyncio.sleep(0.02)
 
+    def readiness_snapshot(self) -> dict[str, Any]:
+        """Return database, queue and on-demand worker readiness state."""
+        database = self.store.database
+        schema_version = database.schema_version()
+        expected_schema_version = database.expected_schema_version
+        integrity = database.integrity_check()
+        live_workers = sum(not task.done() for task in self._worker_tasks)
+        queue_counts = self.job_queue.status_counts(self.QUEUE_NAME)
+        ready = bool(
+            not self._stopping
+            and self.worker_count > 0
+            and integrity == "ok"
+            and schema_version == expected_schema_version
+        )
+        return {
+            "ready": ready,
+            "database": {
+                "integrity": integrity,
+                "schema_version": schema_version,
+                "expected_schema_version": expected_schema_version,
+            },
+            "workers": {
+                "mode": "on_demand",
+                "configured": self.worker_count,
+                "live": live_workers,
+                "executing": len(self._executing_jobs),
+                "stopping": self._stopping,
+            },
+            "queue": {"name": self.QUEUE_NAME, "counts": queue_counts},
+        }
+
     def _ensure_workers(self) -> None:
         if self._stopping:
             return
@@ -288,6 +321,10 @@ class SessionService:
     async def _run_attempt_job(self, job: JobRecord, worker_id: str) -> None:
         """Execute one claimed job and fence all terminal writes by its lease."""
         session_id = str(job.payload["session_id"])
+        logger.info(
+            "job_started",
+            extra={"job_id": job.job_id, "session_id": session_id},
+        )
         _, attempt, _, _ = self._materialize_job(job)
         session = self.store.get_session(session_id)
         if session is None:
@@ -316,6 +353,10 @@ class SessionService:
                     worker_id=worker_id,
                 ),
                 timeout=self.attempt_timeout_seconds,
+            )
+            logger.info(
+                "job_execution_finished",
+                extra={"job_id": job.job_id, "session_id": session_id},
             )
             result = self._attach_manifest_and_quality_gate(job, attempt, result)
             if not self.job_queue.complete(job.job_id, worker_id, result):

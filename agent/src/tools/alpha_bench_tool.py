@@ -700,7 +700,11 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
     except ValueError as exc:
         return {"status": "error", "error": str(exc)}
 
-    top_n = int(kwargs.get("top", 20) or 20)
+    raw_top = kwargs.get("top", 20)
+    try:
+        top_n = int(20 if raw_top is None else raw_top)
+    except (TypeError, ValueError):
+        return {"status": "error", "error": "top must be an integer > 0"}
     if top_n <= 0:
         return {"status": "error", "error": "top must be > 0"}
 

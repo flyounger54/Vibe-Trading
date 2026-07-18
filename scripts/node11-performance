@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Deterministic Node 11 API, queue, SSE, data-batch and long-backtest checks."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import statistics
+import sys
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "agent"))
+
+os.environ.setdefault("ENABLE_SESSION_RUNTIME", "false")
+os.environ.setdefault("VIBE_TRADING_AUDIT_LOG_PATH", str(Path(tempfile.gettempdir()) / "vibe-node11-audit.jsonl"))
+
+import httpx  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+import api_server  # noqa: E402
+from backtest.engines.base import _align  # noqa: E402
+from backtest.loaders.platform import (  # noqa: E402
+    Adjustment,
+    BarRequest,
+    ProviderCapabilities,
+    ProviderRegistry,
+)
+from src.session.events import EventBus  # noqa: E402
+from src.state.database import StateDatabase  # noqa: E402
+from src.state.jobs import SQLiteJobQueue  # noqa: E402
+
+
+async def api_benchmark(*, concurrency: int, requests: int) -> dict[str, float]:
+    transport = httpx.ASGITransport(app=api_server.app)
+    semaphore = asyncio.Semaphore(concurrency)
+    latencies: list[float] = []
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        async def one() -> None:
+            async with semaphore:
+                started = time.perf_counter()
+                response = await client.get("/healthz")
+                response.raise_for_status()
+                latencies.append((time.perf_counter() - started) * 1000)
+
+        await asyncio.gather(*(one() for _ in range(requests)))
+    ordered = sorted(latencies)
+    p95 = ordered[max(0, int(len(ordered) * 0.95) - 1)]
+    return {"requests": len(ordered), "concurrency": concurrency, "p50_ms": statistics.median(ordered), "p95_ms": p95}
+
+
+def queue_benchmark(root: Path, *, jobs: int = 500, workers: int = 8) -> dict[str, float | int]:
+    queue = SQLiteJobQueue(StateDatabase(root / "queue.db"))
+    for index in range(jobs):
+        queue.enqueue("perf", {"index": index}, idempotency_key=f"perf-{index:08d}")
+    completed: set[str] = set()
+    guard = threading.Lock()
+    started = time.perf_counter()
+
+    def worker(index: int) -> None:
+        worker_id = f"worker-{index}"
+        while True:
+            job = queue.claim("perf", worker_id, lease_seconds=30)
+            if job is None:
+                return
+            if not queue.complete(job.job_id, worker_id, {"ok": True}):
+                raise RuntimeError(f"completion fence rejected {job.job_id}")
+            with guard:
+                completed.add(job.job_id)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(worker, range(workers)))
+    elapsed = time.perf_counter() - started
+    counts = queue.status_counts("perf")
+    if len(completed) != jobs or counts.get("completed") != jobs:
+        raise RuntimeError(f"queue lost jobs: submitted={jobs} unique={len(completed)} counts={counts}")
+    return {"jobs": jobs, "workers": workers, "elapsed_seconds": elapsed, "jobs_per_second": jobs / elapsed, "lost": 0}
+
+
+def sse_benchmark(events: int = 10_000) -> dict[str, float | int]:
+    bus = EventBus(max_buffer_size=events)
+    started = time.perf_counter()
+    first_id = ""
+    for index in range(events):
+        event = bus.emit("perf", "tick", {"index": index})
+        if index == 0:
+            first_id = event.event_id or ""
+    replayed = bus.replay("perf", first_id)
+    elapsed = time.perf_counter() - started
+    if len(replayed) != events - 1:
+        raise RuntimeError(f"SSE replay lost events: {len(replayed)} != {events - 1}")
+    return {"events": events, "elapsed_seconds": elapsed, "events_per_second": events / elapsed, "lost": 0}
+
+
+def data_batch_benchmark(symbols: int = 100, bars: int = 250) -> dict[str, float | int]:
+    index = pd.date_range("2025-01-02", periods=bars, freq="B")
+    base = pd.DataFrame(
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000.0},
+        index=index,
+    )
+
+    class FixtureProvider:
+        name = "fixture"
+        markets = {"us"}
+        requires_auth = False
+        provider_version = "1"
+        capabilities = ProviderCapabilities(adjustments=frozenset({Adjustment.NONE}))
+
+        def is_available(self) -> bool:
+            return True
+
+        def fetch(self, codes, start_date, end_date, **kwargs):
+            return {code: base.copy() for code in codes}
+
+    codes = tuple(f"SYM{index:03d}" for index in range(symbols))
+    registry = ProviderRegistry(providers={"fixture": FixtureProvider}, fallback_chains={"us": ["fixture"]})
+    started = time.perf_counter()
+    report = registry.fetch(
+        BarRequest(symbols=codes, market="us", start_date=str(index[0].date()), end_date=str(index[-1].date()))
+    )
+    elapsed = time.perf_counter() - started
+    if len(report.data) != symbols or report.failures:
+        raise RuntimeError(f"batch data loss: data={len(report.data)} failures={len(report.failures)}")
+    return {"symbols": symbols, "bars_per_symbol": bars, "elapsed_seconds": elapsed, "lost": 0}
+
+
+def long_backtest_benchmark(symbols: int = 20, bars: int = 5_000) -> dict[str, float | int]:
+    index = pd.date_range("2000-01-03", periods=bars, freq="B")
+    data: dict[str, pd.DataFrame] = {}
+    signals: dict[str, pd.Series] = {}
+    for number in range(symbols):
+        close = 100 + np.cumsum(np.sin(np.arange(bars) / (10 + number)) * 0.1 + 0.01)
+        code = f"SYM{number:03d}"
+        data[code] = pd.DataFrame({"close": close}, index=index)
+        signals[code] = pd.Series(np.where(pd.Series(close).rolling(20).mean().to_numpy() < close, 1.0, 0.0), index=index)
+    started = time.perf_counter()
+    dates, close, positions, returns = _align(data, signals, sorted(data))
+    elapsed = time.perf_counter() - started
+    if len(dates) != bars or close.empty or positions.empty or returns.empty:
+        raise RuntimeError("long backtest alignment produced incomplete output")
+    return {"symbols": symbols, "bars": bars, "points": symbols * bars, "elapsed_seconds": elapsed}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--max-api-p95-ms", type=float, default=300)
+    args = parser.parse_args()
+    with tempfile.TemporaryDirectory(prefix="vibe-node11-perf-") as directory:
+        results = {
+            "api": asyncio.run(api_benchmark(concurrency=20, requests=200)),
+            "queue": queue_benchmark(Path(directory)),
+            "sse": sse_benchmark(),
+            "data_batch": data_batch_benchmark(),
+            "long_backtest": long_backtest_benchmark(),
+        }
+    results["accepted"] = results["api"]["p95_ms"] <= args.max_api_p95_ms and results["queue"]["lost"] == 0
+    encoded = json.dumps(results, ensure_ascii=False, indent=2) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(encoded, encoding="utf-8")
+    print(encoded, end="")
+    return 0 if results["accepted"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

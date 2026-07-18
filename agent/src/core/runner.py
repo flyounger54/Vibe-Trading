@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 from rich.console import Console
 
+from src.observability import record_backtest_duration
+
 
 console = Console(stderr=True)
 
@@ -367,6 +369,7 @@ class Runner:
         exit_code, stdout, stderr = self._run_capped(cmd, cwd=process_cwd, env=env)
 
         elapsed = time.time() - start_time
+        record_backtest_duration("strategy_subprocess", "success" if exit_code == 0 else "failure", elapsed)
         console.print(f"[blue]Runner: subprocess finished in {elapsed:.2f}s[/blue]")
 
         stdout_path.write_text(stdout, encoding="utf-8")

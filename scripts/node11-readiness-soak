@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Sample a release-candidate container's readiness for a bounded soak window."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+def _ready(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:  # noqa: S310 - fixed localhost URL
+            payload = json.load(response)
+    except (OSError, urllib.error.HTTPError, json.JSONDecodeError):
+        return False
+    return response.status == 200 and payload.get("status") == "ready"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("image")
+    parser.add_argument("--duration-seconds", type=float, default=300)
+    parser.add_argument("--interval-seconds", type=float, default=5)
+    parser.add_argument("--startup-timeout-seconds", type=float, default=60)
+    parser.add_argument("--port", type=int, default=18898)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if args.duration_seconds <= 0 or args.interval_seconds <= 0 or args.startup_timeout_seconds <= 0:
+        parser.error("durations and interval must be positive")
+
+    name = f"vibe-node11-rc-soak-{os.getpid()}"
+    url = f"http://127.0.0.1:{args.port}/readyz"
+    api_key = "node11-rc-soak-key-that-is-long-enough"
+    started = time.monotonic()
+    startup_ready = False
+    samples = 0
+    successes = 0
+    longest_failure_streak = 0
+    failure_streak = 0
+    exit_code: int | None = None
+    error: str | None = None
+
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "-p",
+                f"127.0.0.1:{args.port}:8899",
+                "-e",
+                f"API_AUTH_KEY={api_key}",
+                "-e",
+                "ENABLE_SESSION_RUNTIME=true",
+                args.image,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        deadline = time.monotonic() + args.startup_timeout_seconds
+        while time.monotonic() < deadline:
+            if _ready(url):
+                startup_ready = True
+                break
+            time.sleep(min(1.0, args.interval_seconds))
+
+        soak_deadline = time.monotonic() + args.duration_seconds
+        while startup_ready and time.monotonic() < soak_deadline:
+            samples += 1
+            if _ready(url):
+                successes += 1
+                failure_streak = 0
+            else:
+                failure_streak += 1
+                longest_failure_streak = max(longest_failure_streak, failure_streak)
+            time.sleep(min(args.interval_seconds, max(0.0, soak_deadline - time.monotonic())))
+
+        subprocess.run(["docker", "stop", "--time", "20", name], check=True, capture_output=True, text=True)
+        inspected = subprocess.run(
+            ["docker", "inspect", name, "--format", "{{.State.ExitCode}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        exit_code = int(inspected.stdout.strip())
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        error = str(exc)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True, text=True)
+
+    accepted = startup_ready and samples > 0 and successes == samples and exit_code == 0 and error is None
+    payload = {
+        "image": args.image,
+        "elapsed_seconds": time.monotonic() - started,
+        "startup_ready": startup_ready,
+        "samples": samples,
+        "successes": successes,
+        "uptime_pct": (successes / samples * 100.0) if samples else 0.0,
+        "longest_failure_streak": longest_failure_streak,
+        "container_exit_code": exit_code,
+        "error": error,
+        "accepted": accepted,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if accepted else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -36,6 +36,7 @@ from src.goal.context import (
     goal_needs_continuation,
     goal_progress_tuple,
 )
+from src.observability import record_llm_tokens
 from src.providers.chat import ChatLLM, ProviderStreamError
 from src.tools.background_tools import get_background_manager
 from src.tools.redaction import redact_payload
@@ -143,6 +144,12 @@ def _record_llm_usage(
         tmp_path.replace(path)
     except OSError as exc:
         logger.debug("LLM usage artifact write skipped: %s", exc)
+
+    record_llm_tokens(
+        str(summary.get("provider") or "unknown"),
+        input_tokens=normalized["input_tokens"],
+        output_tokens=normalized["output_tokens"],
+    )
 
     return normalized
 
