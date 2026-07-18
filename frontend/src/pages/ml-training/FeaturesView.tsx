@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Loader2, Plus, CheckCircle2 } from "lucide-react";
 import { api, type MLProfileSummary } from "@/lib/api";
 import { ContextTip, LoadingState } from "./shared";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 export function FeaturesView() {
   const { t } = useTranslation();
@@ -11,22 +12,27 @@ export function FeaturesView() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ universe: "csi300", period: "2018-2020", zoo: "qlib158" });
   const [result, setResult] = useState<{ profile_id: string; n_selected: number; factors: string[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
+    setLoading(true);
+    setError(null);
     api.listFeatureProfiles()
       .then((r) => setProfiles(r.profiles))
-      .catch(() => {})
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Failed to load feature profiles"))
       .finally(() => setLoading(false));
-  }, [result]);
+  }, [result, retryKey]);
 
   const handleCreate = async () => {
     setCreating(true);
     setResult(null);
+    setError(null);
     try {
       const r = await api.createFeatureProfile({ ...form, methods: ["ic_filter", "corr_dedup"] });
       setResult(r);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed");
+      setError(e instanceof Error ? e.message : "Failed to create the feature profile");
     } finally {
       setCreating(false);
     }
@@ -35,22 +41,23 @@ export function FeaturesView() {
   return (
     <div className="space-y-4">
       <ContextTip tipKey="features" />
+      {error ? <ErrorRetryBanner message={error} onRetry={() => setRetryKey((key) => key + 1)} /> : null}
       {/* Create form */}
       <div className="border rounded-xl p-4 bg-card">
         <h3 className="text-sm font-medium mb-3">{t("mlTraining.features.create")}</h3>
         <div className="flex flex-col md:flex-row gap-3">
-          <select value={form.universe} onChange={(e) => setForm((f) => ({ ...f, universe: e.target.value }))} className="form-select md:w-36">
+          <label className="md:w-36"><span className="sr-only">Universe</span><select value={form.universe} onChange={(e) => setForm((f) => ({ ...f, universe: e.target.value }))} className="form-select">
             <option value="csi300">CSI 300</option>
             <option value="sp500">S&P 500</option>
-          </select>
-          <input value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} className="form-input md:w-44" placeholder="2018-2020" />
-          <select value={form.zoo} onChange={(e) => setForm((f) => ({ ...f, zoo: e.target.value }))} className="form-select md:w-36">
+          </select></label>
+          <label className="md:w-44"><span className="sr-only">Period</span><input value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} className="form-input" placeholder="2018-2020" /></label>
+          <label className="md:w-36"><span className="sr-only">Factor zoo</span><select value={form.zoo} onChange={(e) => setForm((f) => ({ ...f, zoo: e.target.value }))} className="form-select">
             <option value="qlib158">Qlib 158</option>
             <option value="alpha101">Alpha 101</option>
             <option value="gtja191">GTJA 191</option>
             <option value="academic">Academic</option>
-          </select>
-          <button onClick={handleCreate} disabled={creating} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50">
+          </select></label>
+          <button type="button" onClick={handleCreate} disabled={creating} className="inline-flex min-h-11 items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50">
             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             {t("mlTraining.features.run")}
           </button>

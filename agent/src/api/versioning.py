@@ -5,6 +5,26 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
+from src.contracts.errors import ErrorEnvelope
+
+
+V1_ERROR_RESPONSES = {
+    code: {"model": ErrorEnvelope, "description": description}
+    for code, description in {
+        400: "Invalid request",
+        401: "Authentication required",
+        403: "Request forbidden",
+        404: "Resource not found",
+        409: "Request conflict",
+        422: "Request validation failed",
+        429: "Rate limit exceeded",
+        500: "Internal server error",
+        502: "Upstream service error",
+        503: "Service unavailable",
+        504: "Upstream service timeout",
+    }.items()
+}
+
 
 def install_version_aliases(app: FastAPI, *, prefix: str = "/api/v1") -> int:
     """Expose each business route below ``prefix`` and keep legacy paths active."""
@@ -17,7 +37,10 @@ def install_version_aliases(app: FastAPI, *, prefix: str = "/api/v1") -> int:
     for route in original_routes:
         if not isinstance(route, APIRoute):
             continue
-        if route.path.startswith(prefix) or route.path in {"/openapi.json", "/docs", "/redoc"}:
+        if route.path.startswith(prefix):
+            route.responses = {**route.responses, **V1_ERROR_RESPONSES}
+            continue
+        if route.path in {"/openapi.json", "/docs", "/redoc"}:
             continue
         versioned_path = f"{prefix}{route.path}"
         if versioned_path in existing_paths:
@@ -33,7 +56,7 @@ def install_version_aliases(app: FastAPI, *, prefix: str = "/api/v1") -> int:
             summary=route.summary,
             description=route.description,
             response_description=route.response_description,
-            responses=route.responses,
+            responses={**route.responses, **V1_ERROR_RESPONSES},
             deprecated=route.deprecated,
             name=f"v1_{route.name}",
             operation_id=f"v1_{route.operation_id}" if route.operation_id else None,

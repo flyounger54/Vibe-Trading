@@ -1,6 +1,8 @@
 import { Suspense, lazy, type ComponentType } from "react";
 import { createBrowserRouter } from "react-router-dom";
 import { Layout } from "@/components/layout/Layout";
+import { NotFoundPage, RouteErrorPage } from "@/components/common/RouteState";
+import { useTranslation } from "react-i18next";
 
 const Home = lazy(() => import("@/pages/Home").then((m) => ({ default: m.Home })));
 const Agent = lazy(() => import("@/pages/Agent").then((m) => ({ default: m.Agent })));
@@ -36,9 +38,10 @@ const IndustryChain = lazy(() =>
 );
 
 function PageLoader() {
+  const { t } = useTranslation();
   return (
-    <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
-      Loading…
+    <div className="flex h-[60vh] items-center justify-center text-muted-foreground" role="status" aria-live="polite">
+      {t("routeState.loading")}
     </div>
   );
 }
@@ -67,6 +70,7 @@ export const prefetchRoute: Record<string, () => void> = {
 export const router = createBrowserRouter([
   {
     element: <Layout />,
+    errorElement: <RouteErrorPage />,
     children: [
       { path: "/", element: wrap(Home) },
       { path: "/agent", element: wrap(Agent) },
@@ -86,6 +90,7 @@ export const router = createBrowserRouter([
       { path: "/ml-training/:tab", element: wrap(MLTraining) },
       { path: "/industry-chain", element: wrap(IndustryChain) },
       { path: "/industry-chain/:chainId", element: wrap(IndustryChain) },
+      { path: "*", element: <NotFoundPage /> },
     ],
   },
 ]);

@@ -131,13 +131,13 @@ export const SwarmGuide = memo(function SwarmGuide({ open, onClose, onSelectPres
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
-      <div ref={panelRef} className="relative w-full max-w-lg bg-background border-l shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="swarm-guide-title" className="relative w-full max-w-lg bg-background border-l shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
         {/* Header */}
         <div className="flex items-center gap-3 border-b px-4 py-3 shrink-0">
           <BookOpen className="h-5 w-5 text-primary" />
-          <h2 className="flex-1 text-base font-bold">Swarm 使用手册</h2>
-          <button type="button" onClick={onClose} className="p-1 rounded-md hover:bg-muted transition-colors">
-            <X className="h-4 w-4" />
+          <h2 id="swarm-guide-title" className="flex-1 text-base font-bold">Swarm 使用手册</h2>
+          <button type="button" onClick={onClose} className="inline-flex h-11 w-11 items-center justify-center rounded-md hover:bg-muted transition-colors" aria-label="关闭 Swarm 使用手册">
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 

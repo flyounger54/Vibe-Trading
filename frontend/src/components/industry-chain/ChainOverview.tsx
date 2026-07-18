@@ -115,7 +115,7 @@ function ProsperityGauge({ value }: { value: number | null }) {
       chart.dispose();
     };
   }, [value, dark]);
-  return <div ref={ref} style={{ height: 200 }} />;
+  return <div ref={ref} style={{ height: 200 }} role="img" aria-label="产业链生命周期阶段仪表盘" />;
 }
 
 function ChokepointBar({ segments }: { segments: Chain["segments"] }) {
@@ -180,7 +180,7 @@ function ChokepointBar({ segments }: { segments: Chain["segments"] }) {
       </div>
     );
   }
-  return <div ref={ref} style={{ height: Math.max(160, scored.length * 38) }} />;
+  return <div ref={ref} style={{ height: Math.max(160, scored.length * 38) }} role="img" aria-label="产业链环节卡点评分对比图" />;
 }
 
 function CoreTargetsTable({ chain }: { chain: Chain }) {

@@ -4,6 +4,7 @@
 
 import { useCallback, useRef } from "react";
 import { AuthenticatedEventStream } from "@/lib/fetchSSE";
+import { ApiError } from "@/lib/apiTransport";
 
 type EventHandler = (data: Record<string, unknown>) => void;
 type Handlers = Record<string, EventHandler>;
@@ -125,8 +126,17 @@ export function useSSE(config?: SSEConfig) {
     }
     listenersRef.current = listeners;
 
-    source.onerror = () => {
+    source.onerror = (error) => {
       if (closedRef.current) return;
+      if (error instanceof ApiError) {
+        handlersRef.current["error"]?.({
+          message: error.message,
+          status: error.status,
+          code: error.code,
+          requestId: error.requestId,
+          retryable: error.retryable,
+        });
+      }
       cleanupSource(source);
       sourceRef.current = null;
       scheduleReconnect();

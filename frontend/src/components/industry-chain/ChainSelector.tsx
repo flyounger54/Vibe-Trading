@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, X, GitBranch, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ChainSummary, type ChainTemplate } from "@/lib/api";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 interface Props {
   chains: ChainSummary[];
@@ -59,37 +60,43 @@ export function ChainSelector({
       {chains.map((c) => (
         <div
           key={c.chain_id}
-          onClick={() => onSelect(c.chain_id)}
-          className={`group cursor-pointer rounded-md border p-3 transition hover:border-primary/50 ${
+          className={`group relative rounded-md border transition hover:border-primary/50 ${
             activeChainId === c.chain_id ? "border-primary bg-primary/5" : "bg-card"
           }`}
         >
-          <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => onSelect(c.chain_id)}
+            aria-current={activeChainId === c.chain_id ? "true" : undefined}
+            className="w-full p-3 pr-12 text-left"
+          >
             <div className="flex items-center gap-2">
-              <GitBranch className="h-4 w-4 text-muted-foreground" />
+              <GitBranch className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
               <span className="font-medium">{c.name}</span>
             </div>
-            <button
-              onClick={(e) => handleDelete(e, c.chain_id)}
-              className="opacity-0 transition group-hover:opacity-100"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-red-500" />
-            </button>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-              {c.segment_count} 环节
-            </span>
-            {c.lifecycle_stage && (
-              <span
-                className="rounded px-1.5 py-0.5 text-xs font-medium text-white"
-                style={{ background: STAGE_COLOR[c.lifecycle_stage] ?? "#64748b" }}
-              >
-                {c.lifecycle_stage}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {c.segment_count} 环节
               </span>
-            )}
-            <StatusDot status={c.status} />
-          </div>
+              {c.lifecycle_stage && (
+                <span
+                  className="rounded px-1.5 py-0.5 text-xs font-medium text-white"
+                  style={{ background: STAGE_COLOR[c.lifecycle_stage] ?? "#64748b" }}
+                >
+                  {c.lifecycle_stage}
+                </span>
+              )}
+              <StatusDot status={c.status} />
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={(e) => handleDelete(e, c.chain_id)}
+            className="absolute right-1 top-1 inline-flex h-11 w-11 items-center justify-center rounded-md opacity-100 transition hover:bg-muted md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100"
+            aria-label={`删除 ${c.name}`}
+          >
+            <Trash2 className="h-4 w-4 text-muted-foreground hover:text-red-500" aria-hidden="true" />
+          </button>
         </div>
       ))}
 
@@ -131,6 +138,8 @@ function CreateModal({
   const [customName, setCustomName] = useState("");
   const [customSegments, setCustomSegments] = useState("");
   const [creating, setCreating] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, true, onClose);
 
   const createTemplate = async (key: string) => {
     setCreating(true);
@@ -172,19 +181,25 @@ function CreateModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg"
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-chain-title"
+        className="max-h-full w-full max-w-lg overflow-y-auto rounded-lg border bg-card p-4 shadow-lg sm:p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-base font-semibold">新建产业链</h3>
-          <button onClick={onClose}>
-            <X className="h-4 w-4 text-muted-foreground" />
+          <h2 id="create-chain-title" className="text-base font-semibold">新建产业链</h2>
+          <button type="button" onClick={onClose} className="inline-flex h-11 w-11 items-center justify-center rounded-md hover:bg-muted" aria-label="关闭新建产业链">
+            <X className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
           </button>
         </div>
 
         <div className="mb-4 flex gap-1 rounded-md border p-1">
           <button
+            type="button"
             onClick={() => setMode("template")}
+            aria-pressed={mode === "template"}
             className={`flex-1 rounded px-3 py-1.5 text-sm transition ${
               mode === "template" ? "bg-primary text-primary-foreground" : "text-muted-foreground"
             }`}
@@ -192,7 +207,9 @@ function CreateModal({
             从模板
           </button>
           <button
+            type="button"
             onClick={() => setMode("custom")}
+            aria-pressed={mode === "custom"}
             className={`flex-1 rounded px-3 py-1.5 text-sm transition ${
               mode === "custom" ? "bg-primary text-primary-foreground" : "text-muted-foreground"
             }`}
@@ -202,9 +219,10 @@ function CreateModal({
         </div>
 
         {mode === "template" ? (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {templates.map((t) => (
               <button
+                type="button"
                 key={t.key}
                 disabled={creating}
                 onClick={() => createTemplate(t.key)}
@@ -242,6 +260,7 @@ function CreateModal({
               />
             </div>
             <button
+              type="button"
               disabled={creating}
               onClick={createCustom}
               className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"

@@ -7,6 +7,7 @@ import { echarts, CHART_GROUP, connectCharts } from "@/lib/echarts";
 import { getChartTheme } from "@/lib/chart-theme";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { SkeletonChart, SkeletonMetrics } from "@/components/common/Skeleton";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 interface MetricDef {
   key: string;
@@ -199,7 +200,7 @@ function EquityChartOverlay({ leftCurve, rightCurve, leftLabel, rightLabel }: Eq
 
   if (leftCurve.length === 0 && rightCurve.length === 0) return null;
 
-  return <div ref={ref} style={{ height: 320 }} />;
+  return <div ref={ref} style={{ height: 320 }} role="img" aria-label={`Equity curve comparison: ${leftLabel} and ${rightLabel}`} />;
 }
 
 export function Compare() {
@@ -212,14 +213,22 @@ export function Compare() {
   const [rightCurve, setRightCurve] = useState<EquityPoint[]>([]);
   const [leftLoading, setLeftLoading] = useState(false);
   const [rightLoading, setRightLoading] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
+    setRunsLoading(true);
+    setError(null);
     api.listRuns().then((items) => {
       setRuns(Array.isArray(items) ? items : []);
       if (items.length >= 2) { setLeftId(items[1].run_id); setRightId(items[0].run_id); }
       else if (items.length === 1) { setLeftId(items[0].run_id); }
-    }).catch(() => {});
-  }, []);
+    }).catch((reason: unknown) => {
+      setRuns([]);
+      setError(reason instanceof Error ? reason.message : "Failed to load runs");
+    }).finally(() => setRunsLoading(false));
+  }, [retryKey]);
 
   useEffect(() => {
     if (leftId) {
@@ -227,13 +236,17 @@ export function Compare() {
       api.getRun(leftId).then((d: RunData) => {
         setLeftData(d.metrics || null);
         setLeftCurve(d.equity_curve || []);
-      }).catch(() => { setLeftData(null); setLeftCurve([]); })
+      }).catch((reason: unknown) => {
+        setLeftData(null);
+        setLeftCurve([]);
+        setError(reason instanceof Error ? reason.message : "Failed to load the baseline run");
+      })
         .finally(() => setLeftLoading(false));
     } else {
       setLeftData(null);
       setLeftCurve([]);
     }
-  }, [leftId]);
+  }, [leftId, retryKey]);
 
   useEffect(() => {
     if (rightId) {
@@ -241,43 +254,49 @@ export function Compare() {
       api.getRun(rightId).then((d: RunData) => {
         setRightData(d.metrics || null);
         setRightCurve(d.equity_curve || []);
-      }).catch(() => { setRightData(null); setRightCurve([]); })
+      }).catch((reason: unknown) => {
+        setRightData(null);
+        setRightCurve([]);
+        setError(reason instanceof Error ? reason.message : "Failed to load the comparison run");
+      })
         .finally(() => setRightLoading(false));
     } else {
       setRightData(null);
       setRightCurve([]);
     }
-  }, [rightId]);
+  }, [rightId, retryKey]);
 
   const leftRun = runs.find((r) => r.run_id === leftId);
   const rightRun = runs.find((r) => r.run_id === rightId);
-  const loading = leftLoading || rightLoading;
+  const loading = runsLoading || leftLoading || rightLoading;
   const hasData = Boolean(leftData || rightData);
 
   return (
-    <div className="p-8 max-w-4xl space-y-6">
+    <div className="max-w-4xl space-y-6 p-4 md:p-8">
       <h1 className="text-xl font-bold flex items-center gap-2">
         <GitCompare className="h-5 w-5" /> Strategy Comparison
       </h1>
 
       {/* Selectors */}
-      <div className="flex gap-4 items-end">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-4">
         <div className="flex-1">
-          <label className="text-xs text-muted-foreground block mb-1">{i18n.t("compare.baseline")}</label>
-          <select value={leftId} onChange={(e) => setLeftId(e.target.value)} className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" title={leftRun?.prompt || leftId}>
+          <label htmlFor="compare-baseline" className="text-xs text-muted-foreground block mb-1">{i18n.t("compare.baseline")}</label>
+          <select id="compare-baseline" value={leftId} onChange={(e) => setLeftId(e.target.value)} className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" title={leftRun?.prompt || leftId}>
             <option value="">{i18n.t("compare.select")}</option>
             {runs.map((r) => <option key={r.run_id} value={r.run_id}>{runLabel(r)} ({r.status})</option>)}
           </select>
         </div>
-        <ArrowRight className="h-5 w-5 text-muted-foreground mb-2 shrink-0" />
+        <ArrowRight className="h-5 w-5 rotate-90 self-center text-muted-foreground sm:mb-2 sm:rotate-0 sm:self-auto" aria-hidden="true" />
         <div className="flex-1">
-          <label className="text-xs text-muted-foreground block mb-1">{i18n.t("compare.compare")}</label>
-          <select value={rightId} onChange={(e) => setRightId(e.target.value)} className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" title={rightRun?.prompt || rightId}>
+          <label htmlFor="compare-target" className="text-xs text-muted-foreground block mb-1">{i18n.t("compare.compare")}</label>
+          <select id="compare-target" value={rightId} onChange={(e) => setRightId(e.target.value)} className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" title={rightRun?.prompt || rightId}>
             <option value="">{i18n.t("compare.select")}</option>
             {runs.map((r) => <option key={r.run_id} value={r.run_id}>{runLabel(r)} ({r.status})</option>)}
           </select>
         </div>
       </div>
+
+      {error ? <ErrorRetryBanner message={error} onRetry={() => setRetryKey((key) => key + 1)} /> : null}
 
       {/* Loading state — show skeletons while a selected run's data is in flight */}
       {loading && !hasData && (
@@ -307,7 +326,7 @@ export function Compare() {
 
       {/* Metrics table */}
       {(leftData || rightData) && (
-        <div className="border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto rounded-xl border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/40">

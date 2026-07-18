@@ -4,6 +4,7 @@ import { Loader2, GitCompare, XCircle, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, type MLModelSummary, type MLCompareRow } from "@/lib/api";
 import { ContextTip, LoadingState } from "./shared";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 export function CompareView() {
   const { t } = useTranslation();
@@ -12,13 +13,17 @@ export function CompareView() {
   const [comparison, setComparison] = useState<MLCompareRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
+    setLoading(true);
+    setError(null);
     api.listMLModels()
       .then((r) => setModels(r.models))
-      .catch(() => {})
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Failed to load models"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [retryKey]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -31,11 +36,12 @@ export function CompareView() {
   const handleCompare = async () => {
     if (selected.size < 2) return;
     setComparing(true);
+    setError(null);
     try {
       const r = await api.compareMLModels([...selected]);
       setComparison(r.comparison);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Compare failed");
+      setError(e instanceof Error ? e.message : "Compare failed");
     } finally {
       setComparing(false);
     }
@@ -46,10 +52,12 @@ export function CompareView() {
   return (
     <div className="space-y-4">
       <ContextTip tipKey="compare" />
+      {error ? <ErrorRetryBanner message={error} onRetry={() => setRetryKey((key) => key + 1)} /> : null}
       <div className="border rounded-xl p-4 bg-card">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium">{t("mlTraining.compare.select")}</h3>
           <button
+            type="button"
             onClick={handleCompare}
             disabled={selected.size < 2 || comparing}
             className="inline-flex items-center gap-2 px-4 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"

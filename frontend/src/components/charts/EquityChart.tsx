@@ -108,5 +108,5 @@ export function EquityChart({ data, height = 300 }: Props) {
   if (data.length === 0) {
     return <div className="text-muted-foreground text-sm p-4">No equity data</div>;
   }
-  return <div ref={ref} style={{ height }} />;
+  return <div ref={ref} style={{ height }} role="img" aria-label={`Equity and drawdown chart with ${data.length} observations`} />;
 }

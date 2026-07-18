@@ -27,6 +27,7 @@ import { AnalysisProgress } from "@/components/industry-chain/AnalysisProgress";
 import { SwarmInsight } from "@/components/industry-chain/SwarmInsight";
 import { ChainCompare } from "@/components/industry-chain/ChainCompare";
 import { HypothesisPanel } from "@/components/industry-chain/HypothesisPanel";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 type Tab = "overview" | "redteam" | "hypotheses" | string; // string = segment_id
 
@@ -40,24 +41,31 @@ export function IndustryChain() {
   const [tab, setTab] = useState<Tab>("overview");
   const [showCompare, setShowCompare] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadList = useCallback(async () => {
+    setLoadError(null);
     try {
       const [c, t] = await Promise.all([api.listChains(), api.listChainTemplates()]);
       setChains(c.chains);
       setTemplates(t.templates);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "加载失败");
+      const message = err instanceof Error ? err.message : "加载失败";
+      setLoadError(message);
+      toast.error(message);
     }
   }, []);
 
   const loadChain = useCallback(async (id: string) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const c = await api.getChain(id);
       setChain(c);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "加载失败");
+      const message = err instanceof Error ? err.message : "加载失败";
+      setLoadError(message);
+      toast.error(message);
       setChain(null);
     } finally {
       setLoading(false);
@@ -133,7 +141,7 @@ export function IndustryChain() {
   }, [chain, loadChain, loadList]);
 
   return (
-    <div className="flex h-full flex-col gap-6 p-6">
+    <div className="flex min-h-full flex-col gap-4 p-4 md:gap-6 md:p-6">
       <div className="flex flex-col gap-2 border-b pb-4">
         <div className="flex items-center gap-2">
           <GitBranch className="h-5 w-5 text-primary" />
@@ -144,9 +152,19 @@ export function IndustryChain() {
         </p>
       </div>
 
-      <div className="flex flex-1 gap-6 overflow-hidden">
+      {loadError ? (
+        <ErrorRetryBanner
+          message={loadError}
+          onRetry={() => {
+            void loadList();
+            if (chainId) void loadChain(chainId);
+          }}
+        />
+      ) : null}
+
+      <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row lg:gap-6 lg:overflow-hidden">
         {/* Left rail */}
-        <aside className="w-64 shrink-0 overflow-y-auto">
+        <aside className="w-full shrink-0 lg:w-64 lg:overflow-y-auto" aria-label="产业链列表">
           <ChainSelector
             chains={chains}
             templates={templates}
@@ -158,10 +176,10 @@ export function IndustryChain() {
         </aside>
 
         {/* Main */}
-        <main className="flex-1 overflow-y-auto">
+        <div className="min-w-0 flex-1 lg:overflow-y-auto">
           {loading ? (
-            <div className="flex h-40 items-center justify-center text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin" />
+            <div className="flex h-40 items-center justify-center text-muted-foreground" role="status" aria-label="正在加载产业链">
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
             </div>
           ) : showCompare ? (
             <div className="p-2">
@@ -201,7 +219,7 @@ export function IndustryChain() {
               onRefresh={() => loadChain(chain.chain_id)}
             />
           )}
-        </main>
+        </div>
       </div>
     </div>
   );
@@ -239,7 +257,7 @@ function ChainView({
             <p className="text-sm text-muted-foreground">{chain.description}</p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <ScheduleSelect chainId={chain.chain_id} current={chain.refresh_schedule} rowVersion={chain.row_version} onChanged={onRefresh} />
           <ExportButton chainId={chain.chain_id} chainName={chain.name} />
           <button

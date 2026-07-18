@@ -3,6 +3,7 @@ import { echarts } from "@/lib/echarts";
 import { getChartTheme } from "@/lib/chart-theme";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type ChainSnapshot } from "@/lib/api";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 interface Props {
   chainId: string;
@@ -21,12 +22,21 @@ export function ProsperityHistory({ chainId }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const { dark } = useDarkMode();
   const [snapshots, setSnapshots] = useState<ChainSnapshot[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = () => {
+    setLoading(true);
+    setError(null);
     api
       .getChainHistory(chainId)
       .then((r) => setSnapshots(r.snapshots))
-      .catch(() => {});
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "景气度历史加载失败"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
   }, [chainId]);
 
   useEffect(() => {
@@ -107,6 +117,14 @@ export function ProsperityHistory({ chainId }: Props) {
     };
   }, [snapshots, dark]);
 
+  if (loading) {
+    return <div className="flex h-32 items-center justify-center text-xs text-muted-foreground" role="status">正在加载景气度历史…</div>;
+  }
+
+  if (error) {
+    return <ErrorRetryBanner message={error} onRetry={load} />;
+  }
+
   if (snapshots.length < 1) {
     return (
       <div className="flex h-32 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
@@ -117,7 +135,7 @@ export function ProsperityHistory({ chainId }: Props) {
 
   return (
     <div>
-      <div ref={ref} style={{ height: 220 }} />
+      <div ref={ref} style={{ height: 220 }} role="img" aria-label="产业链景气度历史趋势图" />
       <div className="mt-1 flex flex-wrap gap-2 px-1">
         {Object.entries(STAGE_COLOR).map(([stage, color]) => (
           <span key={stage} className="flex items-center gap-1 text-[10px] text-muted-foreground">

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Lightbulb, Plus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ChainHypothesis } from "@/lib/api";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 interface Props {
   chainId: string;
@@ -18,14 +19,16 @@ const STATUS_STYLE: Record<string, { cls: string; label: string }> = {
 export function HypothesisPanel({ chainId }: Props) {
   const [hypotheses, setHypotheses] = useState<ChainHypothesis[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
   const load = () => {
     setLoading(true);
+    setError(null);
     api
       .listChainHypotheses(chainId)
       .then((r) => setHypotheses(r.hypotheses))
-      .catch(() => {})
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "投资假说加载失败"))
       .finally(() => setLoading(false));
   };
 
@@ -41,17 +44,20 @@ export function HypothesisPanel({ chainId }: Props) {
           投资假说：注册可证伪的投研观点，追踪验证状态，挂载回测结果。
         </div>
         <button
+          type="button"
           onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition hover:bg-muted"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition hover:bg-muted"
         >
           <Plus className="h-3.5 w-3.5" /> 新建假说
         </button>
       </div>
 
       {loading ? (
-        <div className="flex h-20 items-center justify-center text-muted-foreground">
+        <div className="flex h-20 items-center justify-center text-muted-foreground" role="status" aria-label="正在加载投资假说">
           <Loader2 className="h-4 w-4 animate-spin" />
         </div>
+      ) : error ? (
+        <ErrorRetryBanner message={error} onRetry={load} />
       ) : hypotheses.length === 0 ? (
         <div className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed text-sm text-muted-foreground">
           <Lightbulb className="h-6 w-6" />
@@ -148,8 +154,9 @@ function CreateForm({
       <h4 className="mb-3 text-sm font-semibold">新建投资假说</h4>
       <div className="space-y-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">标题</label>
+          <label htmlFor="hypothesis-title" className="mb-1 block text-xs font-medium text-muted-foreground">标题</label>
           <input
+            id="hypothesis-title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="如：谐波减速器国产替代加速"
@@ -157,8 +164,9 @@ function CreateForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">论点（研究依据）</label>
+          <label htmlFor="hypothesis-thesis" className="mb-1 block text-xs font-medium text-muted-foreground">论点（研究依据）</label>
           <textarea
+            id="hypothesis-thesis"
             value={thesis}
             onChange={(e) => setThesis(e.target.value)}
             placeholder="如：绿的谐波产能扩张+下游机器人放量，预计国产化率从30%提升到60%"
@@ -167,8 +175,9 @@ function CreateForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">否决条件（可选，可证伪）</label>
+          <label htmlFor="hypothesis-invalidation" className="mb-1 block text-xs font-medium text-muted-foreground">否决条件（可选，可证伪）</label>
           <input
+            id="hypothesis-invalidation"
             value={invalidation}
             onChange={(e) => setInvalidation(e.target.value)}
             placeholder="如：若日本厂商大幅降价15%+以上则逻辑失效"
@@ -177,6 +186,7 @@ function CreateForm({
         </div>
         <div className="flex gap-2">
           <button
+            type="button"
             onClick={submit}
             disabled={creating}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
@@ -184,7 +194,7 @@ function CreateForm({
             {creating && <Loader2 className="h-4 w-4 animate-spin" />}
             创建
           </button>
-          <button onClick={onClose} className="rounded-md border px-4 py-2 text-sm transition hover:bg-muted">
+          <button type="button" onClick={onClose} className="min-h-11 rounded-md border px-4 py-2 text-sm transition hover:bg-muted">
             取消
           </button>
         </div>

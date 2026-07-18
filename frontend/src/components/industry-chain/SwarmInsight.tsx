@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Eye, Loader2 } from "lucide-react";
 import { api, type ChainSwarmDetail, type SwarmTaskSummary } from "@/lib/api";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 interface Props {
   chainId: string;
@@ -28,16 +29,19 @@ export function SwarmInsight({ chainId, runId }: Props) {
   const [detail, setDetail] = useState<ChainSwarmDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     if (!runId) return;
     setLoading(true);
+    setError(null);
     api
       .getChainSwarmDetail(chainId)
       .then(setDetail)
-      .catch(() => {})
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "加载分析详情失败"))
       .finally(() => setLoading(false));
-  }, [chainId, runId]);
+  }, [chainId, runId, retryKey]);
 
   if (!runId) return null;
   if (loading) {
@@ -48,6 +52,7 @@ export function SwarmInsight({ chainId, runId }: Props) {
       </div>
     );
   }
+  if (error) return <ErrorRetryBanner message={error} onRetry={() => setRetryKey((key) => key + 1)} />;
   if (!detail) return null;
 
   const gradeMap: Record<string, string> = {};

@@ -391,15 +391,18 @@ export function PositionSizingGuide({ open, onClose }: { open: boolean; onClose:
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
       <div
         ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="position-sizing-guide-title"
         className="w-full max-w-md h-full bg-background border-l shadow-xl overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-background/95 backdrop-blur-sm border-b px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Scale className="h-4 w-4 text-primary" />
-            <span className="font-semibold text-sm">仓位管理指南</span>
+            <span id="position-sizing-guide-title" className="font-semibold text-sm">仓位管理指南</span>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted"><X className="h-4 w-4" /></button>
+          <button type="button" onClick={onClose} className="inline-flex h-11 w-11 items-center justify-center rounded hover:bg-muted" aria-label="关闭仓位管理指南"><X className="h-4 w-4" aria-hidden="true" /></button>
         </div>
         <div className="p-4 space-y-2">
           {SIZING_GUIDE_SECTIONS.map((section) => (

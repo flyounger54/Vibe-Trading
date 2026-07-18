@@ -1,4 +1,5 @@
-import { authHeaders } from "@/lib/apiAuth";
+import { createGeneratedApiClient } from "@/generated/api-client";
+import { requestJson, uploadFile } from "@/lib/apiTransport";
 import type {
   AddGoalEvidenceRequest as GeneratedAddGoalEvidenceRequest,
   AddGoalEvidenceResponse as GeneratedAddGoalEvidenceResponse,
@@ -18,137 +19,26 @@ import type {
   UpdateGoalStatusResponse as GeneratedUpdateGoalStatusResponse,
 } from "@/generated/api-types";
 
+export {
+  ApiError,
+  AUTH_REQUIRED_MESSAGE,
+  isAuthRequiredError,
+} from "@/lib/apiTransport";
+export type { ApiErrorKind, UploadResult } from "@/lib/apiTransport";
+
 const BASE = "/api/v1";
 
-export class ApiError extends Error {
-  status: number;
+const request = requestJson;
 
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-  }
-}
-
-export const AUTH_REQUIRED_MESSAGE =
-  "API access requires a Bearer key, including on localhost. Add API_AUTH_KEY in Settings or use the key generated at ~/.vibe-trading/security/api.key.";
-
-export function isAuthRequiredError(error: unknown): boolean {
-  return error instanceof ApiError && (error.status === 401 || error.status === 403);
-}
-
-async function errorFromResponse(res: Response): Promise<ApiError> {
-  let detail = `HTTP ${res.status}`;
-  try {
-    const body = await res.json();
-    detail = body.detail || body.message || detail;
-  } catch { /* ignore */ }
-  if (res.status === 401 || res.status === 403) {
-    detail = AUTH_REQUIRED_MESSAGE;
-  }
-  return new ApiError(detail, res.status);
-}
-
-const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
-const RETRY_BASE_MS = 1_000;
-
-function isRetryable(status: number): boolean {
-  return status >= 500 && status <= 599;
-}
-
-interface RequestOptions extends RequestInit {
-  timeout?: number;
-  retries?: number;
-}
-
-async function request<T>(path: string, options?: RequestOptions): Promise<T> {
-  const { headers, timeout = DEFAULT_TIMEOUT_MS, retries = MAX_RETRIES, ...rest } = options ?? {};
-  const mergedHeaders: Record<string, string> = { "Content-Type": "application/json", ...authHeaders() };
-  if (headers) {
-    new Headers(headers).forEach((value, key) => {
-      mergedHeaders[key] = value;
-    });
-  }
-
-  let lastError: ApiError | undefined;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** (attempt - 1)));
-    }
-
-    const timeoutSignal = AbortSignal.timeout(timeout);
-    const merged = rest.signal
-      ? AbortSignal.any([rest.signal, timeoutSignal])
-      : timeoutSignal;
-
-    try {
-      const res = await fetch(`${BASE}${path}`, {
-        ...rest,
-        signal: merged,
-        headers: mergedHeaders,
-      });
-      if (!res.ok) {
-        const err = await errorFromResponse(res);
-        if (isRetryable(res.status) && attempt < retries) {
-          lastError = err;
-          continue;
-        }
-        throw err;
-      }
-      const text = await res.text();
-      return text ? JSON.parse(text) : ({} as T);
-    } catch (e) {
-      if (e instanceof ApiError) throw e;
-      if (e instanceof DOMException && e.name === "TimeoutError") {
-        throw new ApiError("Request timed out", 0);
-      }
-      if (e instanceof DOMException && e.name === "AbortError") {
-        throw new ApiError("Request cancelled", 0);
-      }
-      throw e;
-    }
-  }
-  throw lastError ?? new ApiError("Request failed after retries", 0);
-}
-
-export interface UploadResult {
-  status: string;
-  file_path: string;
-  filename: string;
-}
-
-async function uploadFile(file: File, onProgress?: (pct: number) => void): Promise<UploadResult> {
-  const form = new FormData();
-  form.append("file", file);
-
-  if (!onProgress) {
-    const res = await fetch(`${BASE}/upload`, { method: "POST", headers: authHeaders(), body: form });
-    if (!res.ok) throw await errorFromResponse(res);
-    return res.json();
-  }
-
-  return new Promise<UploadResult>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${BASE}/upload`);
-    const hdrs = authHeaders();
-    for (const [k, v] of Object.entries(hdrs)) xhr.setRequestHeader(k, v);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        let detail = `HTTP ${xhr.status}`;
-        try { const b = JSON.parse(xhr.responseText); detail = b.detail || b.message || detail; } catch { /* ignore */ }
-        reject(new ApiError(detail, xhr.status));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError("Upload failed", 0));
-    xhr.send(form);
-  });
-}
+export const generatedApi = createGeneratedApiClient(
+  <T>(operation: { method: string; path: string; body?: unknown }) => requestJson<T>(
+    operation.path,
+    {
+      method: operation.method,
+      body: operation.body === undefined ? undefined : JSON.stringify(operation.body),
+    },
+  ),
+);
 
 function appendQueryParam(url: string, key: string, value: string): string {
   const sep = url.includes("?") ? "&" : "?";
@@ -227,6 +117,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  getCorrelation: (codes: string, days: number, method: "pearson" | "spearman") =>
+    generatedApi.request<{ labels: string[]; matrix: number[][] }>(
+      "v1_get_correlation_matrix_api_v1_correlation_get",
+      { query: { codes, days, method } },
+    ),
 
   // Alpha Zoo API
   listAlphas: (params: AlphaListParams = {}) => {

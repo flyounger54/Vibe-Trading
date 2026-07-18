@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
   Activity,
-  AlertTriangle,
   CheckCircle2,
   Clock3,
   Loader2,
@@ -17,6 +16,7 @@ import {
 } from "lucide-react";
 import { api, type LiveBrokerStatus, type LiveMandateLimits, type LiveStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 const RUNTIME_POLL_INTERVAL_MS = 15_000;
 
@@ -88,14 +88,11 @@ export function Runtime() {
         ) : null}
 
         {!loading && error ? (
-          <section className="rounded-md border border-amber-500/30 bg-amber-500/5 p-5">
-            <div className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-300">
-              <AlertTriangle className="h-5 w-5" />
-              {t("runtime.unavailableTitle")}
-            </div>
-            <p className="mt-2 text-sm text-muted-foreground">{error}</p>
-            <p className="mt-2 text-xs text-muted-foreground">{t("runtime.unavailableHint")}</p>
-          </section>
+          <div className="space-y-2">
+            <h2 className="font-medium text-danger">{t("runtime.unavailableTitle")}</h2>
+            <ErrorRetryBanner message={error} onRetry={() => void loadStatus("refresh")} />
+            <p className="text-xs text-muted-foreground">{t("runtime.unavailableHint")}</p>
+          </div>
         ) : null}
 
         {!loading && !error && status ? (

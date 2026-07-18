@@ -104,5 +104,18 @@ export function CorrelationMatrix({ labels, matrix, height = 500 }: Props) {
   if (labels.length === 0) {
     return <div className="text-muted-foreground text-sm p-4">No correlation data</div>;
   }
-  return <div ref={ref} style={{ height }} />;
+  return (
+    <div>
+      <div ref={ref} style={{ height }} role="img" aria-label={`Correlation matrix for ${labels.join(", ")}`} />
+      <table className="sr-only">
+        <caption>Correlation values</caption>
+        <thead><tr><th scope="col">Asset</th>{labels.map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
+        <tbody>
+          {labels.map((label, row) => (
+            <tr key={label}><th scope="row">{label}</th>{labels.map((column, col) => <td key={column}>{(matrix[row]?.[col] ?? 0).toFixed(4)}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }

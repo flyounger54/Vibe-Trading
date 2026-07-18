@@ -43,5 +43,5 @@ export function MiniEquityChart({ data, height = 80 }: Props) {
   }, [data, dark]);
 
   if (data.length < 2) return null;
-  return <div ref={ref} style={{ height }} className="rounded-lg overflow-hidden" />;
+  return <div ref={ref} style={{ height }} className="rounded-lg overflow-hidden" role="img" aria-label={`Equity trend from ${data[0].equity} to ${data[data.length - 1].equity}`} />;
 }

@@ -2,10 +2,10 @@ import i18n from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Target, Search, Loader2, Library } from "lucide-react";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { api, type StrategySummary } from "@/lib/api";
 import { CATEGORY_CARDS, UNIVERSE_OPTIONS, RISK_OPTIONS, PAGE_SIZE, RiskBadge, CategoryBadge } from "./shared";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 export function BrowseView() {
   const [strategies, setStrategies] = useState<StrategySummary[]>([]);
@@ -16,10 +16,13 @@ export function BrowseView() {
   const [search, setSearch] = useState("");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [total, setTotal] = useState<number>(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setLoadError(null);
     api
       .listStrategies({
         category: categoryFilter || undefined,
@@ -36,7 +39,7 @@ export function BrowseView() {
       .catch((err: unknown) => {
         if (!alive) return;
         const msg = err instanceof Error ? err.message : "Failed to load strategies";
-        toast.error(msg);
+        setLoadError(msg);
         setStrategies([]);
         setTotal(0);
       })
@@ -44,7 +47,7 @@ export function BrowseView() {
         if (alive) setLoading(false);
       });
     return () => { alive = false; };
-  }, [categoryFilter, universeFilter, riskFilter]);
+  }, [categoryFilter, universeFilter, riskFilter, retryKey]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -79,6 +82,8 @@ export function BrowseView() {
           {i18n.t("strategyZoo.heroDescription")}
         </p>
       </div>
+
+      {loadError ? <ErrorRetryBanner message={loadError} onRetry={() => setRetryKey((key) => key + 1)} /> : null}
 
       {/* Category cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">

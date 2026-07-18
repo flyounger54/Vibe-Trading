@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import {
-  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   FileText,
@@ -15,6 +14,7 @@ import {
 import { api, type RunListItem } from "@/lib/api";
 import { formatMetricVal } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 const REPORT_SCAN_LIMIT = 100;
 
@@ -108,6 +108,7 @@ export function Reports() {
 
         <section className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_160px_150px_150px_170px]">
           <label className="relative block">
+            <span className="sr-only">{t("reports.searchPlaceholder")}</span>
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               value={query}
@@ -116,17 +117,20 @@ export function Reports() {
               className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm outline-none transition focus:border-primary"
             />
           </label>
-          <select
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value)}
-            className="rounded-md border bg-background px-3 py-2 text-sm"
-          >
-            {statusOptions.map((status) => (
-              <option key={status} value={status}>
-                {status === "all" ? t("reports.allStatuses") : status}
-              </option>
-            ))}
-          </select>
+          <label>
+            <span className="sr-only">{t("reports.allStatuses")}</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              className="h-full w-full rounded-md border bg-background px-3 py-2 text-sm"
+            >
+              {statusOptions.map((status) => (
+                <option key={status} value={status}>
+                  {status === "all" ? t("reports.allStatuses") : status}
+                </option>
+              ))}
+            </select>
+          </label>
           <input
             type="date"
             value={startDate}
@@ -167,13 +171,10 @@ export function Reports() {
         ) : null}
 
         {!loading && error ? (
-          <section className="rounded-md border border-amber-500/30 bg-amber-500/5 p-5">
-            <div className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-300">
-              <AlertTriangle className="h-5 w-5" />
-              {t("reports.unavailable")}
-            </div>
-            <p className="mt-2 text-sm text-muted-foreground">{error}</p>
-          </section>
+          <div className="space-y-2">
+            <h2 className="font-medium text-danger">{t("reports.unavailable")}</h2>
+            <ErrorRetryBanner message={error} onRetry={() => void loadReports("refresh")} />
+          </div>
         ) : null}
 
         {!loading && !error && filtered.length === 0 ? (

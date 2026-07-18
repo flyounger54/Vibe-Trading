@@ -14,8 +14,8 @@ export function ConnectionBanner({ status, retryAttempt }: Props) {
 
   if (!isOnline) {
     return (
-      <div className="flex items-center gap-2 px-4 py-2 text-xs bg-danger/15 text-danger border-b border-danger/30">
-        <WifiOff className="h-3.5 w-3.5" />
+      <div className="flex items-center gap-2 px-4 py-2 text-xs bg-danger/15 text-danger border-b border-danger/30" role="status" aria-live="polite">
+        <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
         <span>{t('connection.offline')}</span>
       </div>
     );
@@ -24,15 +24,15 @@ export function ConnectionBanner({ status, retryAttempt }: Props) {
   if (status === "connected" || status === "disconnected") return null;
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 text-xs bg-warning/15 text-warning border-b border-warning/30">
+    <div className="flex items-center gap-2 px-4 py-2 text-xs bg-warning/15 text-warning border-b border-warning/30" role="status" aria-live="polite">
       {status === "reconnecting" ? (
         <>
-          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+          <RefreshCw className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           <span>{t('connection.reconnecting', { attempt: retryAttempt || 1 })}</span>
         </>
       ) : (
         <>
-          <WifiOff className="h-3.5 w-3.5" />
+          <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
           <span>{t('connection.disconnected')}</span>
         </>
       )}

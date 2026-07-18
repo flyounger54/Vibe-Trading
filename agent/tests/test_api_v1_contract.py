@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 import api_server
@@ -28,6 +30,34 @@ def _client(monkeypatch, tmp_path: Path) -> TestClient:
     monkeypatch.setattr(api_server, "_session_service", service)
     api_server.app.dependency_overrides[api_server.require_auth] = lambda: None
     return TestClient(api_server.app)
+
+
+def test_v1_unhandled_errors_use_stable_envelope_without_leaking_details() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 1234),
+            "path": "/api/v1/boom",
+            "raw_path": b"/api/v1/boom",
+            "query_string": b"",
+            "headers": [(b"x-request-id", b"node10-500")],
+        }
+    )
+
+    response = asyncio.run(api_server._versioned_unhandled_error(request, RuntimeError("secret detail")))
+
+    assert response.status_code == 500
+    assert json.loads(response.body) == {
+        "code": "internal_error",
+        "message": "Internal server error",
+        "request_id": "node10-500",
+        "retryable": False,
+        "details": None,
+    }
+    assert response.headers["x-request-id"] == "node10-500"
 
 
 def test_v1_and_legacy_session_contracts_are_equivalent(monkeypatch, tmp_path: Path) -> None:
@@ -118,6 +148,12 @@ def test_generated_openapi_contains_legacy_and_v1_paths() -> None:
     assert "/sessions" in schema["paths"]
     assert "/api/v1/sessions" in schema["paths"]
     assert "SessionResponse" in schema["components"]["schemas"]
+    assert "ErrorEnvelope" in schema["components"]["schemas"]
+    v1_errors = schema["paths"]["/api/v1/sessions"]["get"]["responses"]
+    assert v1_errors["401"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorEnvelope"
+    }
+    assert "401" not in schema["paths"]["/sessions"]["get"]["responses"]
 
 
 def test_checked_in_openapi_matches_runtime_schema() -> None:

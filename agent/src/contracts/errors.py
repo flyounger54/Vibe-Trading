@@ -61,7 +61,9 @@ def error_code_for_status(status_code: int) -> ErrorCode:
         422: ErrorCode.INVALID_ARGUMENT,
         429: ErrorCode.RATE_LIMITED,
         501: ErrorCode.UNAVAILABLE,
+        502: ErrorCode.UNAVAILABLE,
         503: ErrorCode.UNAVAILABLE,
+        504: ErrorCode.UNAVAILABLE,
     }.get(status_code, ErrorCode.INTERNAL)
 
 

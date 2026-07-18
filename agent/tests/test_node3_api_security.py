@@ -67,6 +67,21 @@ def test_loopback_requires_bearer_and_correct_bearer_succeeds(security_env) -> N
     assert response.status_code == 200
 
 
+def test_versioned_security_rejections_use_stable_error_envelope(security_env) -> None:
+    with _local_client() as client:
+        response = client.get("/api/v1/runs")
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "code": "unauthorized",
+        "message": "Invalid or missing API key",
+        "request_id": response.headers["x-request-id"],
+        "retryable": False,
+        "details": None,
+    }
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
 def test_query_api_key_is_rejected_and_never_authenticates_sse(security_env) -> None:
     key = api_server._configured_api_key()
     with _local_client() as client:

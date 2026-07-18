@@ -6,6 +6,8 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 
+from src.api.versioning import V1_ERROR_RESPONSES
+
 from src.contracts.sessions import (
     CreateSessionRequest,
     MessageResponse,
@@ -50,6 +52,7 @@ def register_session_routes(
         prefix="/api/v1/sessions",
         tags=["v1", "sessions"],
         dependencies=[Depends(require_auth)],
+        responses=V1_ERROR_RESPONSES,
     )
 
     @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)

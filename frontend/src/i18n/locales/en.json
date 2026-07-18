@@ -23,7 +23,23 @@
     "light": "Light",
     "dark": "Dark",
     "collapse": "Collapse",
-    "expand": "Expand"
+    "expand": "Expand",
+    "primaryNavigation": "Primary navigation",
+    "openNavigation": "Open navigation",
+    "closeNavigation": "Close navigation",
+    "loadingSessions": "Loading sessions",
+    "sessionsUnavailable": "Sessions are unavailable.",
+    "retry": "Retry",
+    "renameSession": "Rename session",
+    "sessionRenameFailed": "Could not rename the session.",
+    "sessionDeleteFailed": "Could not delete the session."
+  },
+  "routeState": {
+    "loading": "Loading…",
+    "errorTitle": "This page could not be loaded",
+    "errorBody": "An unexpected page error occurred.",
+    "notFoundTitle": "Page not found",
+    "notFoundBody": "The address may be incorrect or the page may have moved."
   },
   "runtime": {
     "monitorBadge": "Runtime Monitor",

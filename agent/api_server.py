@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, UploadFile, status
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -449,7 +449,7 @@ app = FastAPI(
     description="Vibe-Trading API: natural-language finance research, backtesting, and swarm workflows",
     version=APP_VERSION,
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
 )
 
 _DEFAULT_CORS_ORIGINS = [
@@ -540,23 +540,49 @@ app.add_middleware(
 )
 
 
+def _api_error_response(
+    request: Request,
+    status_code: int,
+    detail: Any,
+    *,
+    details: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+) -> JSONResponse:
+    """Return the stable v1 envelope while preserving legacy error bodies."""
+    request_id = (
+        getattr(request.state, "request_id", None)
+        or request.headers.get("X-Request-ID")
+        or uuid.uuid4().hex
+    )
+    response_headers = {"X-Request-ID": request_id, **(headers or {})}
+    if request.url.path.startswith("/api/v1/"):
+        envelope = ErrorEnvelope(
+            code=error_code_for_status(status_code),
+            message=str(detail),
+            request_id=request_id,
+            retryable=status_is_retryable(status_code),
+            details=details if details is not None else (detail if not isinstance(detail, str) else None),
+        )
+        content = envelope.model_dump(mode="json")
+    else:
+        content = {"detail": detail}
+    return JSONResponse(
+        status_code=status_code,
+        content=content,
+        headers=response_headers,
+    )
+
+
 @app.exception_handler(HTTPException)
 async def _versioned_http_error(request: Request, exc: HTTPException):
     """Return stable errors for /api/v1 while preserving legacy FastAPI errors."""
     if not request.url.path.startswith("/api/v1/"):
         return await http_exception_handler(request, exc)
-    request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or uuid.uuid4().hex
-    envelope = ErrorEnvelope(
-        code=error_code_for_status(exc.status_code),
-        message=str(exc.detail),
-        request_id=request_id,
-        retryable=status_is_retryable(exc.status_code),
-        details=exc.detail if not isinstance(exc.detail, str) else None,
-    )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=envelope.model_dump(mode="json"),
-        headers={"X-Request-ID": request_id},
+    return _api_error_response(
+        request,
+        exc.status_code,
+        exc.detail,
+        headers=dict(exc.headers or {}),
     )
 
 
@@ -564,17 +590,33 @@ async def _versioned_http_error(request: Request, exc: HTTPException):
 async def _versioned_validation_error(request: Request, exc: RequestValidationError):
     if not request.url.path.startswith("/api/v1/"):
         return await request_validation_exception_handler(request, exc)
-    request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or uuid.uuid4().hex
-    envelope = ErrorEnvelope(
-        code=error_code_for_status(422),
-        message="Request validation failed",
-        request_id=request_id,
-        retryable=False,
+    return _api_error_response(
+        request,
+        422,
+        "Request validation failed",
         details=exc.errors(),
     )
-    return JSONResponse(
-        status_code=422,
-        content=envelope.model_dump(mode="json"),
+
+
+@app.exception_handler(Exception)
+async def _versioned_unhandled_error(request: Request, exc: Exception):
+    """Keep v1 failures machine-readable without leaking exception details."""
+    request_id = (
+        getattr(request.state, "request_id", None)
+        or request.headers.get("X-Request-ID")
+        or uuid.uuid4().hex
+    )
+    logger.exception(
+        "Unhandled API error request_id=%s path=%s",
+        request_id,
+        request.url.path,
+        exc_info=exc,
+    )
+    if request.url.path.startswith("/api/v1/"):
+        return _api_error_response(request, 500, "Internal server error")
+    return PlainTextResponse(
+        "Internal Server Error",
+        status_code=500,
         headers={"X-Request-ID": request_id},
     )
 
@@ -583,10 +625,7 @@ async def _versioned_validation_error(request: Request, exc: RequestValidationEr
 async def _reject_untrusted_loopback_host(request: Request, call_next):
     """Block DNS-rebinding Host headers before loopback auth bypasses run."""
     if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN,
-            content={"detail": "Untrusted local API host"},
-        )
+        return _api_error_response(request, status.HTTP_403_FORBIDDEN, "Untrusted local API host")
     return await call_next(request)
 
 
@@ -985,7 +1024,7 @@ async def _unified_api_security_boundary(request: Request, call_next):
     try:
         if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
             auth_result = "host-rejected"
-            response = JSONResponse(status_code=403, content={"detail": "Untrusted local API host"})
+            response = _api_error_response(request, 403, "Untrusted local API host")
             return _secure_response(response, request_id)
 
         origin = request.headers.get("origin", "")
@@ -994,12 +1033,12 @@ async def _unified_api_security_boundary(request: Request, call_next):
             or (origin and origin not in _CORS_ORIGINS and not _is_loopback_origin(origin))
         ):
             auth_result = "origin-rejected"
-            response = JSONResponse(status_code=403, content={"detail": "Cross-site request denied"})
+            response = _api_error_response(request, 403, "Cross-site request denied")
             return _secure_response(response, request_id)
 
         if "api_key" in request.query_params:
             auth_result = "query-key-rejected"
-            response = JSONResponse(status_code=400, content={"detail": "API keys are not accepted in URLs"})
+            response = _api_error_response(request, 400, "API keys are not accepted in URLs")
             return _secure_response(response, request_id)
 
         anonymous = _is_anonymous_request(request)
@@ -1008,9 +1047,10 @@ async def _unified_api_security_boundary(request: Request, call_next):
         allowed, retry_after = rate_limiter.allow(limiter_key, _rate_limit())
         if not allowed:
             auth_result = "rate-limited"
-            response = JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded"},
+            response = _api_error_response(
+                request,
+                429,
+                "Rate limit exceeded",
                 headers={"Retry-After": str(retry_after)},
             )
             return _secure_response(response, request_id)
@@ -1019,9 +1059,10 @@ async def _unified_api_security_boundary(request: Request, call_next):
             expected = _configured_api_key()
             if not token or not hmac.compare_digest(token, expected):
                 auth_result = "rejected"
-                response = JSONResponse(
-                    status_code=401,
-                    content={"detail": "Invalid or missing API key"},
+                response = _api_error_response(
+                    request,
+                    401,
+                    "Invalid or missing API key",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
                 return _secure_response(response, request_id)
@@ -1041,12 +1082,13 @@ async def _unified_api_security_boundary(request: Request, call_next):
                 try:
                     claimed = idempotency_registry.claim(raw_idempotency_key, scope=idempotency_scope)
                 except ValueError:
-                    response = JSONResponse(status_code=400, content={"detail": "Invalid Idempotency-Key"})
+                    response = _api_error_response(request, 400, "Invalid Idempotency-Key")
                     return _secure_response(response, request_id)
                 if not claimed:
-                    response = JSONResponse(
-                        status_code=409,
-                        content={"detail": "Duplicate request blocked"},
+                    response = _api_error_response(
+                        request,
+                        409,
+                        "Duplicate request blocked",
                         headers={"Idempotency-Replayed": "true"},
                     )
                     return _secure_response(response, request_id)

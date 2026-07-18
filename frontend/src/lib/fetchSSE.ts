@@ -1,4 +1,5 @@
 import { authHeaders } from "@/lib/apiAuth";
+import { ApiError, apiErrorFromResponse } from "@/lib/apiTransport";
 
 type Listener = (event: MessageEvent<string>) => void;
 
@@ -57,8 +58,13 @@ export class AuthenticatedEventStream {
         signal: this.controller.signal,
         credentials: "same-origin",
       });
-      if (!response.ok || !response.body) {
-        throw new Error(`SSE request failed: HTTP ${response.status}`);
+      if (!response.ok) throw await apiErrorFromResponse(response);
+      if (!response.body) {
+        throw new ApiError("The API server returned an empty event stream", response.status, { kind: "parse" });
+      }
+      const contentType = response.headers.get("Content-Type") ?? "";
+      if (!contentType.includes("text/event-stream")) {
+        throw new ApiError("The API server returned an invalid event stream", response.status, { kind: "parse" });
       }
       this.onopen?.();
 

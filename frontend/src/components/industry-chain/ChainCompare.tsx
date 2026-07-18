@@ -192,7 +192,7 @@ function SegmentRadarOverlay({ chains }: { chains: CompareChain[] }) {
   return (
     <div className="rounded-md border bg-card p-5">
       <h3 className="mb-2 text-sm font-semibold text-muted-foreground">环节评分雷达叠加</h3>
-      <div ref={ref} style={{ height: 280 }} />
+      <div ref={ref} style={{ height: 280 }} role="img" aria-label="产业链卡点雷达对比图" />
     </div>
   );
 }

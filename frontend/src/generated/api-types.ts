@@ -19,6 +19,8 @@ export type CreateScheduledRunRequest = { "id"?: string | null; "prompt": string
 export type CreateSessionRequest = { "title"?: string; "config"?: Record<string, unknown> | null };
 export type DataSourceSettingsResponse = { "tushare_token_configured": boolean; "tushare_token_hint"?: string | null; "baostock_supported": boolean; "baostock_installed": boolean; "baostock_message": string; "env_path": string };
 export type EnsembleRequest = { "model_ids": Array<string>; "method"?: string; "weights"?: Array<number> | null; "ensemble_id"?: string | null };
+export type ErrorCode = "invalid_argument" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "unavailable" | "internal_error";
+export type ErrorEnvelope = { "code": ErrorCode; "message": string; "request_id": string; "retryable"?: boolean; "details"?: unknown };
 export type GoalAuditRowRequest = { "criterion_id": string; "result": string; "evidence_ids"?: Array<string>; "notes"?: string };
 export type GoalClaimResponse = { "claim_id": string; "goal_id": string; "session_id": string; "claim_type": string; "text": string; "status": string; "created_at": string; "updated_at": string };
 export type GoalCriterionResponse = { "criterion_id": string; "goal_id": string; "session_id": string; "text": string; "required": boolean; "status": string; "freshness_requirement"?: string | null; "protocol_step"?: string | null; "created_at": string; "updated_at": string };
@@ -81,6 +83,8 @@ export interface components {
     "CreateSessionRequest": CreateSessionRequest;
     "DataSourceSettingsResponse": DataSourceSettingsResponse;
     "EnsembleRequest": EnsembleRequest;
+    "ErrorCode": ErrorCode;
+    "ErrorEnvelope": ErrorEnvelope;
     "GoalAuditRowRequest": GoalAuditRowRequest;
     "GoalClaimResponse": GoalClaimResponse;
     "GoalCriterionResponse": GoalCriterionResponse;

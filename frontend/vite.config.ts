@@ -41,6 +41,11 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5899,
       proxy: {
+        // The frontend API facade uses the versioned base path exclusively.
+        // Keep this first so local development exercises the same contract as
+        // the production FastAPI static host instead of falling through to the
+        // SPA HTML response.
+        "^/api/v1(?:/|$)": apiProxy,
         ...Object.fromEntries(PROXY_PATHS.map((p) => [p, apiProxy])),
         // SPA RunDetail page — only the two-segment ``/runs/{id}``
         // form should fall back to ``index.html`` on browser navigation.

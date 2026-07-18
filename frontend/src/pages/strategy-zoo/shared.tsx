@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Shield, ShieldAlert, ShieldCheck, X, ChevronRight, ChevronDown, Terminal, Lightbulb, Filter, MousePointer, Code2, BarChart3, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 /* ---------- Constants ---------- */
 
@@ -270,6 +271,8 @@ result = run(
 
 export function GuideDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["cards"]));
+  const panelRef = useRef<HTMLElement>(null);
+  useFocusTrap(panelRef, open, onClose);
 
   const toggle = (id: string) =>
     setExpanded((prev) => {
@@ -283,15 +286,22 @@ export function GuideDrawer({ open, onClose }: { open: boolean; onClose: () => v
     <>
       {/* Backdrop */}
       {open && (
-        <div
+        <button
+          type="button"
           className="fixed inset-0 bg-black/30 z-40 lg:hidden"
           onClick={onClose}
+          aria-label="关闭操作指南"
         />
       )}
       {/* Drawer */}
       <aside
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="strategy-guide-title"
+        aria-hidden={!open}
         className={cn(
-          "fixed top-0 right-0 h-full w-80 bg-card border-l z-50 flex flex-col transition-transform duration-300 ease-in-out",
+          "fixed top-0 right-0 h-full w-full max-w-80 bg-card border-l z-50 flex flex-col transition-transform duration-300 ease-in-out",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
@@ -299,12 +309,13 @@ export function GuideDrawer({ open, onClose }: { open: boolean; onClose: () => v
         <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
           <div className="flex items-center gap-2">
             <BookOpen className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold">操作指南</h2>
+            <h2 id="strategy-guide-title" className="text-sm font-semibold">操作指南</h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded hover:bg-muted transition-colors"
-            title="关闭"
+            type="button"
+            className="inline-flex h-11 w-11 items-center justify-center rounded hover:bg-muted transition-colors"
+            aria-label="关闭操作指南"
           >
             <X className="h-4 w-4" />
           </button>
@@ -320,7 +331,8 @@ export function GuideDrawer({ open, onClose }: { open: boolean; onClose: () => v
                 <button
                   type="button"
                   onClick={() => toggle(sec.id)}
-                  className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
+                  aria-expanded={isOpen}
+                  className="w-full flex min-h-11 items-center gap-2 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
                 >
                   <Icon className="h-3.5 w-3.5 text-primary shrink-0" />
                   <span className="text-xs font-medium flex-1">{sec.title}</span>

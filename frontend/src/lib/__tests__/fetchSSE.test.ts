@@ -43,7 +43,10 @@ describe("AuthenticatedEventStream", () => {
 
   it("omits Authorization when no key is configured", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(new ReadableStream({ start: (controller) => controller.close() }), { status: 200 }),
+      new Response(new ReadableStream({ start: (controller) => controller.close() }), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const stream = new AuthenticatedEventStream("/events");
@@ -59,14 +62,14 @@ describe("AuthenticatedEventStream", () => {
     const stream = new AuthenticatedEventStream("/events");
     stream.onerror = (error) => errors.push(error);
     await vi.waitFor(() => expect(errors).toHaveLength(1));
-    expect(String(errors[0])).toContain("401");
+    expect(errors[0]).toMatchObject({ status: 401, kind: "http" });
   });
 
   it("joins multiline SSE data without changing the URL", async () => {
     const payload = new TextEncoder().encode("event: note\ndata: first\ndata: second\n\n");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({
       start(controller) { controller.enqueue(payload); controller.close(); },
-    }), { status: 200 })));
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } })));
     const events: MessageEvent[] = [];
     const stream = new AuthenticatedEventStream("/events?replay=active");
     stream.addEventListener("note", ((event: MessageEvent) => events.push(event)) as EventListener);

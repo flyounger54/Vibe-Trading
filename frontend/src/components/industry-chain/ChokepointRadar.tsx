@@ -76,5 +76,5 @@ export function ChokepointRadar({ scores, height = 260 }: Props) {
       </div>
     );
   }
-  return <div ref={ref} style={{ height }} />;
+  return <div ref={ref} style={{ height }} role="img" aria-label="六维卡点评分雷达图" />;
 }

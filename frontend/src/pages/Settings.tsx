@@ -4,6 +4,7 @@ import { Database, KeyRound, Loader2, RotateCcw, Save, Server, SlidersHorizontal
 import { toast } from "sonner";
 import { api, isAuthRequiredError, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
 import { getApiAuthKey, setApiAuthKey } from "@/lib/apiAuth";
+import { ErrorRetryBanner } from "@/components/common/ErrorRetryBanner";
 
 interface LLMFormState {
   provider: string;
@@ -16,9 +17,9 @@ interface LLMFormState {
 }
 
 const fieldClass =
-  "w-full rounded-md border bg-background px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
+  "min-h-11 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
 const fieldErrorClass =
-  "w-full rounded-md border border-danger bg-background px-3 py-2 text-sm outline-none transition focus:border-danger focus:ring-2 focus:ring-danger/20 disabled:cursor-not-allowed disabled:opacity-60";
+  "min-h-11 w-full rounded-md border border-danger bg-background px-3 py-2 text-sm outline-none transition focus:border-danger focus:ring-2 focus:ring-danger/20 disabled:cursor-not-allowed disabled:opacity-60";
 const labelClass = "text-sm font-medium";
 const hintClass = "text-xs text-muted-foreground";
 const errorTextClass = "text-xs text-danger";
@@ -49,6 +50,7 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [dataSaving, setDataSaving] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
   const validateField = useCallback((field: string, value: unknown) => {
@@ -69,7 +71,7 @@ export function Settings() {
       delete next[field];
       return next;
     });
-  }, []);
+  }, [loadAttempt]);
 
   useEffect(() => {
     let alive = true;
@@ -184,7 +186,7 @@ export function Settings() {
           <KeyRound className="h-4 w-4 text-primary" />
           <h2 className="text-base font-semibold">{"Local API access"}</h2>
         </div>
-        <p className="text-sm text-muted-foreground">{"For remote or private Web UI deployments, enter the server API key once in this browser. Localhost use can stay blank."}</p>
+        <p className="text-sm text-muted-foreground">{"Enter the server API key once in this browser. API requests, including localhost, require it when API authentication is enabled."}</p>
       </div>
       <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
         <label className="grid gap-2">
@@ -200,7 +202,7 @@ export function Settings() {
         </label>
         <button
           type="submit"
-          className="inline-flex items-center justify-center gap-2 self-end rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          className="inline-flex min-h-11 items-center justify-center gap-2 self-end rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Save className="h-4 w-4" />
           {i18n.t("settings.save")}
@@ -212,7 +214,7 @@ export function Settings() {
 
   if (loading || !form || !settings || !dataSettings) {
     return (
-      <div className="mx-auto max-w-5xl space-y-6 p-6">
+      <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold tracking-tight">{"Settings"}</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">{"Configure model credentials and market data source tokens for this local project."}</p>
@@ -220,9 +222,16 @@ export function Settings() {
         {localApiAccessSection}
         <div className="flex min-h-32 items-center justify-center rounded-lg border bg-card p-5 text-sm text-muted-foreground">
           {settingsLoadError ? (
-            <div className="text-center">
-              <div className="font-medium text-foreground">{"Settings are unavailable"}</div>
-              <div className="mt-1">{settingsLoadError}</div>
+            <div className="w-full max-w-xl text-left">
+              <div className="mb-2 font-medium text-foreground">{"Settings are unavailable"}</div>
+              <ErrorRetryBanner
+                message={settingsLoadError}
+                onRetry={() => {
+                  setLoading(true);
+                  setSettingsLoadError(null);
+                  setLoadAttempt((attempt) => attempt + 1);
+                }}
+              />
             </div>
           ) : (
             <>
@@ -248,7 +257,7 @@ export function Settings() {
     : "Leave blank to keep the current token";
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-6">
+    <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold tracking-tight">{"Settings"}</h1>
         <p className="max-w-3xl text-sm text-muted-foreground">{"Configure model credentials and market data source tokens for this local project."}</p>
@@ -295,7 +304,7 @@ export function Settings() {
                 <button
                   type="button"
                   onClick={() => applyProviderDefaults()}
-                  className="inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
                   title={"Use provider defaults"}
                 >
                   <RotateCcw className="h-4 w-4" />
@@ -339,7 +348,7 @@ export function Settings() {
               <div className="flex items-center justify-between gap-3">
                 <span className={hintClass}>{keyStatus}</span>
                 {selectedProvider?.api_key_required ? (
-                  <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  <label className="flex min-h-11 shrink-0 items-center gap-2 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
                       checked={clearApiKey}
@@ -347,7 +356,7 @@ export function Settings() {
                         setClearApiKey(event.target.checked);
                         if (event.target.checked) setApiKey("");
                       }}
-                      className="h-3.5 w-3.5 accent-primary"
+                      className="h-4 w-4 accent-primary"
                     />
                     {"Clear saved API key"}
                   </label>
@@ -435,7 +444,7 @@ export function Settings() {
             <button
               type="submit"
               disabled={saving}
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               {saving ? i18n.t("settings.saving") : i18n.t("settings.save")}
@@ -471,7 +480,7 @@ export function Settings() {
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className={hintClass}>{"Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available."}</span>
-                <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                <label className="flex min-h-11 shrink-0 items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={clearTushareToken}
@@ -479,7 +488,7 @@ export function Settings() {
                       setClearTushareToken(event.target.checked);
                       if (event.target.checked) setTushareToken("");
                     }}
-                    className="h-3.5 w-3.5 accent-primary"
+                    className="h-4 w-4 accent-primary"
                   />
                   {"Clear saved Tushare token"}
                 </label>
@@ -494,7 +503,7 @@ export function Settings() {
             <button
               type="submit"
               disabled={dataSaving}
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {dataSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               {dataSaving ? i18n.t("settings.saving") : "Save data source settings"}

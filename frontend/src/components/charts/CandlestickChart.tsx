@@ -277,7 +277,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
         {/* Time range */}
         <div className="flex gap-0.5">
           {(["1M", "3M", "6M", "1Y", "ALL"] as const).map((r) => (
-            <button key={r} onClick={() => setRange(r)} className={cn("px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors", range === r ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground/50 hover:text-muted-foreground")}>{r}</button>
+            <button type="button" key={r} onClick={() => setRange(r)} aria-pressed={range === r} className={cn("min-h-11 px-2 rounded text-[10px] font-mono transition-colors", range === r ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground/50 hover:text-muted-foreground")}>{r}</button>
           ))}
         </div>
 
@@ -286,8 +286,10 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
         {/* Indicator dropdown */}
         <div className="relative">
           <button
+            type="button"
             onClick={() => setShowMenu(!showMenu)}
-            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            aria-expanded={showMenu}
+            className="flex min-h-11 items-center gap-1 rounded px-2 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
           >
             Indicators ({overlays.size}) <ChevronDown className="h-3 w-3" />
           </button>
@@ -297,7 +299,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
                 <div key={group}>
                   <p className="text-[9px] text-muted-foreground/50 uppercase tracking-wider px-1 pt-1">{group}</p>
                   {OVERLAY_OPTIONS.filter(o => o.group === group).map(o => (
-                    <label key={o.id} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-muted/30 cursor-pointer">
+                    <label key={o.id} className="flex min-h-11 items-center gap-2 rounded px-2 hover:bg-muted/30 cursor-pointer">
                       <input type="checkbox" checked={overlays.has(o.id)} onChange={() => toggleOverlay(o.id)} className="h-3 w-3 rounded accent-primary" />
                       <span className="text-xs">{o.label}</span>
                     </label>
@@ -305,7 +307,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
                 </div>
               ))}
               <div className="border-t mt-1 pt-1">
-                <button onClick={() => { setOverlays(new Set()); setShowMenu(false); }} className="text-[10px] text-muted-foreground hover:text-foreground px-1 py-0.5 w-full text-left rounded hover:bg-muted/30">
+                <button type="button" onClick={() => { setOverlays(new Set()); setShowMenu(false); }} className="min-h-11 w-full rounded px-2 text-left text-[10px] text-muted-foreground hover:bg-muted/30 hover:text-foreground">
                   Bare K (clear all)
                 </button>
               </div>
@@ -318,11 +320,11 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
         {/* Sub-chart selector */}
         <div className="flex gap-0.5">
           {(["vol", "macd", "rsi", "kdj"] as const).map((id) => (
-            <button key={id} onClick={() => setSub(id)} className={cn("px-1.5 py-0.5 rounded text-[10px] font-mono uppercase transition-colors", sub === id ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground/50 hover:text-muted-foreground")}>{id}</button>
+            <button type="button" key={id} onClick={() => setSub(id)} aria-pressed={sub === id} className={cn("min-h-11 px-2 rounded text-[10px] font-mono uppercase transition-colors", sub === id ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground/50 hover:text-muted-foreground")}>{id}</button>
           ))}
         </div>
       </div>
-      <div ref={containerRef} style={{ height }} />
+      <div ref={containerRef} style={{ height }} role="img" aria-label={`Candlestick price chart with ${data.length} observations and ${markers?.length ?? 0} trade markers`} />
     </div>
   );
 }
