@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Play, Loader2, RefreshCw, GitBranch, Clock, GitCompare, Download } from "lucide-react";
+import { Play, Loader2, RefreshCw, GitBranch, Clock, GitCompare, Download, XCircle, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import {
   api,
@@ -95,11 +95,33 @@ export function IndustryChain() {
   const startAnalysis = async () => {
     if (!chain) return;
     try {
-      await api.analyzeChain(chain.chain_id);
-      toast.success("已启动多Agent分析");
+      const result = await api.analyzeChain(chain.chain_id, undefined, crypto.randomUUID());
+      toast.success(result.status === "queued" ? "分析已进入可靠任务队列" : "已启动多Agent分析");
       await loadChain(chain.chain_id);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "启动失败");
+    }
+  };
+
+  const cancelAnalysis = async () => {
+    if (!chain) return;
+    try {
+      await api.cancelChainAnalysis(chain.chain_id);
+      toast.success("已取消分析");
+      await loadChain(chain.chain_id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "取消失败");
+    }
+  };
+
+  const retryAnalysis = async () => {
+    if (!chain) return;
+    try {
+      const result = await api.retryChainAnalysis(chain.chain_id);
+      toast.success(result.status === "queued" ? "重试已进入队列" : "已重新启动分析");
+      await loadChain(chain.chain_id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "重试失败");
     }
   };
 
@@ -173,6 +195,8 @@ export function IndustryChain() {
               tab={tab}
               setTab={setTab}
               onAnalyze={startAnalysis}
+              onCancel={cancelAnalysis}
+              onRetry={retryAnalysis}
               onAnalysisDone={onAnalysisDone}
               onRefresh={() => loadChain(chain.chain_id)}
             />
@@ -188,6 +212,8 @@ function ChainView({
   tab,
   setTab,
   onAnalyze,
+  onCancel,
+  onRetry,
   onAnalysisDone,
   onRefresh,
 }: {
@@ -195,6 +221,8 @@ function ChainView({
   tab: Tab;
   setTab: (t: Tab) => void;
   onAnalyze: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
   onAnalysisDone: () => void;
   onRefresh: () => void;
 }) {
@@ -212,7 +240,7 @@ function ChainView({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <ScheduleSelect chainId={chain.chain_id} current={chain.refresh_schedule} onChanged={onRefresh} />
+          <ScheduleSelect chainId={chain.chain_id} current={chain.refresh_schedule} rowVersion={chain.row_version} onChanged={onRefresh} />
           <ExportButton chainId={chain.chain_id} chainName={chain.name} />
           <button
             onClick={onRefresh}
@@ -228,8 +256,24 @@ function ChainView({
             {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
             一键分析
           </button>
+          {analyzing && (
+            <button onClick={onCancel} className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-2 text-sm text-red-600 transition hover:bg-red-500/5">
+              <XCircle className="h-4 w-4" /> 取消
+            </button>
+          )}
+          {chain.status === "error" && (
+            <button onClick={onRetry} className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm transition hover:bg-muted">
+              <RotateCcw className="h-4 w-4" /> 重试
+            </button>
+          )}
         </div>
       </div>
+
+      {chain.status === "error" && chain.last_error && (
+        <div role="alert" className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-700 dark:text-red-300">
+          {chain.last_error}
+        </div>
+      )}
 
       {analyzing && (
         <AnalysisProgress chainId={chain.chain_id} onDone={onAnalysisDone} />
@@ -247,7 +291,7 @@ function ChainView({
         {chain.segments.map((s) => (
           <TabButton key={s.segment_id} active={tab === s.segment_id} onClick={() => setTab(s.segment_id)}>
             {s.name}
-            {s.chokepoint_total != null && (
+            {s.chokepoint_total != null && s.evidence_state === "supported" && (
               <span className="ml-1 text-xs text-muted-foreground">{s.chokepoint_total}</span>
             )}
           </TabButton>
@@ -297,15 +341,17 @@ function TabButton({
 function ScheduleSelect({
   chainId,
   current,
+  rowVersion,
   onChanged,
 }: {
   chainId: string;
   current: string;
+  rowVersion: number;
   onChanged: () => void;
 }) {
   const handleChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     try {
-      await api.setChainSchedule(chainId, e.target.value);
+      await api.setChainSchedule(chainId, e.target.value, rowVersion);
       toast.success(e.target.value ? `已设为${e.target.value === "weekly" ? "每周" : "每月"}自动刷新` : "已关闭定时刷新");
       onChanged();
     } catch (err) {

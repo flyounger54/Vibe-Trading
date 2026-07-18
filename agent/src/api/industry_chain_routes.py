@@ -27,7 +27,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from src.industry_chain.store import (
@@ -40,11 +40,14 @@ from src.industry_chain.store import (
     Ticker,
 )
 from src.hypotheses.registry import HypothesisRegistry
+from src.industry_chain.refresh import IndustryChainRefreshService
+from src.industry_chain.research_schema import IndustryResearchResult, validate_research_result
 from src.industry_chain.templates import (
     build_chain_from_template,
     build_custom_chain,
     list_templates,
 )
+from src.state.database import ConcurrentUpdateError
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,7 @@ class UpdateChainRequest(BaseModel):
     description: Optional[str] = None
     market: Optional[str] = None
     segments: Optional[List[dict]] = None
+    row_version: Optional[int] = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -93,6 +97,7 @@ class ScheduleRequest(BaseModel):
     """Set or clear the periodic refresh schedule."""
 
     schedule: str = ""  # "" | "weekly" | "monthly"
+    row_version: Optional[int] = None
 
 
 class CreateHypothesisRequest(BaseModel):
@@ -108,34 +113,33 @@ class CreateHypothesisRequest(BaseModel):
 # Swarm result ingestion
 # ---------------------------------------------------------------------------
 
-_JSON_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_JSON_BLOCK = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
-def _extract_chain_json(report: str) -> Optional[dict]:
-    """Extract the director's structured ``{"chain": {...}}`` block.
+def _extract_chain_result(report: str) -> Optional[IndustryResearchResult]:
+    """Decode only the validated research-result contract from a report.
 
-    The director is instructed to emit exactly one fenced ``json`` block; if it
-    emits several, the last valid one wins (the contract block comes last).
-
-    Args:
-        report: The swarm ``final_report`` text.
-
-    Returns:
-        The parsed ``chain`` dict, or ``None`` when no valid block is found.
+    This intentionally has no Markdown/table fallback.  A prose report with
+    plausible-looking numbers is never allowed to become a persisted fact.
     """
-    if not report:
+    if not report or len(report) > 2_000_000:
         return None
-    candidates = _JSON_BLOCK.findall(report)
+    candidates = [report.strip(), *_JSON_BLOCK.findall(report)]
     for raw in reversed(candidates):
         try:
             parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "research_result" in parsed:
+                parsed = parsed["research_result"]
+            return validate_research_result(parsed)
         except (ValueError, TypeError):
             continue
-        if isinstance(parsed, dict) and "chain" in parsed:
-            return parsed["chain"]
-        if isinstance(parsed, dict) and "segments" in parsed:
-            return parsed
     return None
+
+
+def _extract_chain_json(report: str) -> Optional[dict]:
+    """Compatibility helper returning a validated, JSON-safe result dict."""
+    result = _extract_chain_result(report)
+    return result.to_storage_dict() if result is not None else None
 
 
 def _clean_seg_name(raw: str) -> str:
@@ -656,57 +660,91 @@ def _extract_from_markdown(
 
 
 def _ingest(chain: Chain, report: str, final_report: str = "") -> bool:
-    """Merge the director's structured JSON back into a chain in place.
+    """Apply a schema-validated result and materialize evidence lifecycle.
 
-    Tries the structured JSON block first; falls back to parsing Markdown
-    tables when the director outputs prose+tables instead of a fenced JSON
-    contract.
-
-    Args:
-        chain: The chain to update (mutated in place).
-        report: Combined text of all task summaries + final_report.
-        final_report: The director's final_report only (for score extraction).
-
-    Returns:
-        ``True`` when data was found and applied.
+    ``final_report`` remains in the signature for endpoint compatibility but
+    is deliberately not mined for prose.  Every displayed fact comes from an
+    ID-addressable source with an ``as_of`` date.
     """
-    data = _extract_chain_json(report)
-    if not data:
-        data = _extract_from_markdown(
-            report, chain,
-            score_source=final_report or report,
-        )
-    if not data:
+    del final_report
+    result = _extract_chain_result(report)
+    if result is None:
         return False
 
-    chain.overview.structure_summary = str(data.get("structure_summary", "")) or chain.overview.structure_summary
-    chain.overview.lifecycle_stage = str(data.get("lifecycle_stage", "")) or chain.overview.lifecycle_stage
-    if data.get("prosperity_score") is not None:
-        chain.overview.prosperity_score = _num(data.get("prosperity_score"))
-    if data.get("sector_score") is not None:
-        chain.overview.sector_score = _num(data.get("sector_score"))
+    overview = result.overview
+    chain.overview.structure_summary = overview.structure_summary
+    chain.overview.lifecycle_stage = overview.lifecycle_stage
+    chain.overview.prosperity_score = overview.prosperity_score
+    chain.overview.sector_score = overview.sector_score
+    chain.overview.evidence_ids = list(overview.evidence_ids)
+    chain.overview.evidence_state = result.evidence_state(overview.evidence_ids, "overview")
 
-    by_name = {s.name: s for s in chain.segments}
+    by_id = {segment.segment_id: segment for segment in chain.segments}
+    by_name = {segment.name: segment for segment in chain.segments}
     core_targets: List[Ticker] = []
-    for seg_data in data.get("segments", []):
-        if not isinstance(seg_data, dict):
-            continue
-        name = str(seg_data.get("name", "")).strip()
-        if not name:
-            continue
-        seg = by_name.get(name)
-        if seg is None:
-            seg = Segment(name=name, order=len(chain.segments) + 1)
-            chain.segments.append(seg)
-            by_name[name] = seg
-        _apply_segment(seg, seg_data)
-        # Collect Core/Build tickers into the chain-level core targets pool.
-        core_targets.extend(t for t in seg.tickers if t.tier in ("Core", "Build"))
+    for source in sorted(result.segments, key=lambda item: item.order):
+        segment = by_id.get(source.segment_id) or by_name.get(source.name)
+        if segment is None:
+            segment = Segment(name=source.name, segment_id=source.segment_id, order=source.order)
+            chain.segments.append(segment)
+            by_id[segment.segment_id] = segment
+            by_name[segment.name] = segment
+        _apply_structured_segment(segment, source, result)
+        core_targets.extend(
+            ticker
+            for ticker in segment.tickers
+            if ticker.tier in {"Core", "Build"} and ticker.evidence_state == "supported"
+        )
 
-    if core_targets:
-        core_targets.sort(key=lambda t: (t.score or 0), reverse=True)
-        chain.overview.core_targets = core_targets[:12]
+    core_targets.sort(key=lambda ticker: (ticker.score or 0), reverse=True)
+    chain.overview.core_targets = core_targets[:12]
+    chain.nodes = [node.model_dump(mode="json") for node in result.nodes]
+    chain.edges = [edge.model_dump(mode="json") for edge in result.edges]
+    chain.evidence = [item.model_dump(mode="json") for item in result.evidence]
+    chain.conflicts = [item.model_dump(mode="json") for item in result.conflicts]
+    chain.as_of = result.as_of.isoformat()
+    chain.research_version += 1
     return True
+
+
+def _apply_structured_segment(
+    segment: Segment,
+    source: Any,
+    result: IndustryResearchResult,
+) -> None:
+    """Copy one validated segment without retaining old unverified fields."""
+    segment.segment_id = source.segment_id
+    segment.name = source.name
+    segment.name_en = source.name_en
+    segment.order = source.order
+    segment.positioning = source.positioning
+    segment.value_weight = source.value_weight
+    segment.localization_rate = source.localization_rate
+    segment.international_competition = source.international_competition
+    segment.domestic_competition = source.domestic_competition
+    segment.barrier_type = source.barrier_type
+    segment.barrier_description = source.barrier_description
+    segment.chokepoint_score = dict(source.chokepoint_score)
+    segment.chokepoint_total = source.chokepoint_total
+    segment.evidence_ids = list(source.evidence_ids)
+    segment.evidence_state = result.evidence_state(source.evidence_ids, source.segment_id)
+    segment.tickers = [
+        Ticker(
+            code=ticker.code,
+            name=ticker.name,
+            market=ticker.market,
+            score=ticker.score,
+            tier=ticker.tier,
+            classification=ticker.classification,
+            confidence=ticker.confidence,
+            key_products=ticker.key_products,
+            red_team_note=ticker.red_team_note,
+            evidence_ids=list(ticker.evidence_ids),
+            evidence_state=result.evidence_state(ticker.evidence_ids, f"ticker:{ticker.code}"),
+        )
+        for ticker in source.tickers
+    ]
+    segment.status = "complete" if segment.evidence_state == "supported" else "inconclusive"
 
 
 def _apply_segment(seg: Segment, data: dict) -> None:
@@ -764,13 +802,26 @@ def _num(value: Any) -> Optional[float]:
 def _snapshot(chain: Chain) -> dict:
     """Build a prosperity time-series snapshot from the current chain state."""
     return {
+        "research_version": chain.research_version,
+        "as_of": chain.as_of,
         "lifecycle_stage": chain.overview.lifecycle_stage,
         "prosperity_score": chain.overview.prosperity_score,
         "sector_score": chain.overview.sector_score,
+        "overview_evidence_state": chain.overview.evidence_state,
         "segment_scores": {
             s.name: s.chokepoint_total for s in chain.segments if s.chokepoint_total is not None
         },
+        "segment_evidence_states": {s.name: s.evidence_state for s in chain.segments},
     }
+
+
+def _difference(before: Any, after: Any) -> Optional[float]:
+    """Return a numeric version diff only when both snapshots have values."""
+    before_number = _num(before)
+    after_number = _num(after)
+    if before_number is None or after_number is None:
+        return None
+    return after_number - before_number
 
 
 def _render_markdown(chain: Chain) -> str:
@@ -781,12 +832,18 @@ def _render_markdown(chain: Chain) -> str:
         lines.append(f"**生命周期**: {chain.overview.lifecycle_stage} | "
                       f"**景气度**: {chain.overview.prosperity_score or '—'} | "
                       f"**板块评分**: {chain.overview.sector_score or '—'}\n")
+    if chain.as_of:
+        lines.append(f"**数据截至**: {chain.as_of} | **证据状态**: {chain.overview.evidence_state}\n")
     if chain.overview.structure_summary:
         lines.append(f"## 产业链格局\n\n{chain.overview.structure_summary}\n")
 
     lines.append("## 各环节分析\n")
     for seg in chain.segments:
-        score_str = f" (卡脖子 {seg.chokepoint_total})" if seg.chokepoint_total is not None else ""
+        score_str = (
+            f" (卡脖子 {seg.chokepoint_total})"
+            if seg.chokepoint_total is not None and seg.evidence_state == "supported"
+            else " (证据不足/冲突，暂不作确定性评分)"
+        )
         lines.append(f"### {seg.name}{score_str}\n")
         if seg.positioning:
             lines.append(f"- **定位**: {seg.positioning}")
@@ -808,6 +865,23 @@ def _render_markdown(chain: Chain) -> str:
             for t in seg.tickers:
                 lines.append(f"| {t.code} | {t.name} | {t.score or '—'} | {t.tier or '—'} | "
                               f"{t.classification or '—'} | {t.red_team_note or '—'} |")
+        lines.append("")
+
+    if chain.evidence:
+        lines.append("## 证据与时点\n")
+        for item in chain.evidence:
+            status = item.get("status", "missing")
+            lines.append(
+                f"- [{item.get('evidence_id', '—')}] {item.get('claim', '')} "
+                f"— {item.get('source_name', '来源缺失')} | as-of: {item.get('as_of', '—')} "
+                f"| 状态: {status} | {item.get('source_url') or '无可访问来源'}"
+            )
+        lines.append("")
+    if chain.conflicts:
+        lines.append("## 未解决冲突证据\n")
+        for conflict in chain.conflicts:
+            if conflict.get("status") == "open":
+                lines.append(f"- {conflict.get('description', '')}（{', '.join(conflict.get('evidence_ids', []))}）")
         lines.append("")
 
     if chain.overview.core_targets:
@@ -856,21 +930,75 @@ def register_industry_chain_routes(
         if get_swarm_runtime is None:
             get_swarm_runtime = host._get_swarm_runtime
 
-    @app.get("/industry-chain/templates")
+    refresh_service = IndustryChainRefreshService(_store, get_swarm_runtime)
+
+    @app.on_event("startup")
+    async def start_industry_chain_refresh_service() -> None:
+        refresh_service.start()
+
+    @app.on_event("shutdown")
+    async def stop_industry_chain_refresh_service() -> None:
+        refresh_service.stop()
+
+    def _load_chain_or_404(chain_id: str) -> Chain:
+        try:
+            chain = _store.get_chain(chain_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if chain is None:
+            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
+        return chain
+
+    def _compare_payload(ids: str) -> dict:
+        chain_ids = [cid.strip() for cid in ids.split(",") if cid.strip()]
+        if len(chain_ids) < 2:
+            raise HTTPException(status_code=400, detail="Provide at least 2 chain ids (comma-separated)")
+        chains_data = []
+        all_tickers: dict[str, dict[str, Any]] = {}
+        for cid in chain_ids:
+            chain = _load_chain_or_404(cid)
+            segment_scores = {
+                segment.name: segment.chokepoint_total
+                for segment in chain.segments
+                if segment.chokepoint_total is not None and segment.evidence_state == "supported"
+            }
+            chains_data.append({
+                "chain_id": chain.chain_id,
+                "name": chain.name,
+                "status": chain.status,
+                "lifecycle_stage": chain.overview.lifecycle_stage if chain.overview.evidence_state == "supported" else "",
+                "prosperity_score": chain.overview.prosperity_score if chain.overview.evidence_state == "supported" else None,
+                "sector_score": chain.overview.sector_score if chain.overview.evidence_state == "supported" else None,
+                "segment_scores": segment_scores,
+                "segment_names": [segment.name for segment in chain.segments],
+            })
+            for segment in chain.segments:
+                for ticker in segment.tickers:
+                    if ticker.evidence_state != "supported":
+                        continue
+                    all_tickers.setdefault(ticker.code, {"code": ticker.code, "name": ticker.name, "chains": []})["chains"].append(chain.name)
+        shared_tickers = [item for item in all_tickers.values() if len(item["chains"]) >= 2]
+        shared_tickers.sort(key=lambda item: len(item["chains"]), reverse=True)
+        return {"chains": chains_data, "shared_tickers": shared_tickers[:20]}
+
+    @app.get("/industry-chain/templates", dependencies=[Depends(require_auth)])
     async def industry_chain_templates() -> dict:
         return {"templates": list_templates()}
 
-    @app.get("/industry-chain/list")
+    @app.get("/industry-chain/list", dependencies=[Depends(require_auth)])
     async def industry_chain_list() -> dict:
         chains = _store.list_chains()
         return {"chains": [c.summary() for c in chains]}
 
-    @app.get("/industry-chain/{chain_id}")
+    # Register static paths before /{chain_id}; otherwise FastAPI interprets
+    # "compare" as a valid chain identifier and makes comparison unreachable.
+    @app.get("/industry-chain/compare", dependencies=[Depends(require_auth)])
+    async def industry_chain_compare(ids: str = "") -> dict:
+        return _compare_payload(ids)
+
+    @app.get("/industry-chain/{chain_id}", dependencies=[Depends(require_auth)])
     async def industry_chain_detail(chain_id: str) -> dict:
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
-        return chain.to_dict()
+        return _load_chain_or_404(chain_id).to_dict()
 
     @app.post("/industry-chain", dependencies=[Depends(require_auth)])
     async def industry_chain_create(req: CreateChainRequest) -> dict:
@@ -891,14 +1019,12 @@ def register_industry_chain_routes(
                 status_code=400,
                 detail="Provide either template_key or name + segment_names.",
             )
-        _store.save_chain(chain)
+        _store.save_chain(chain, expected_version=0)
         return {"status": "created", "chain_id": chain.chain_id, "chain": chain.to_dict()}
 
     @app.put("/industry-chain/{chain_id}", dependencies=[Depends(require_auth)])
     async def industry_chain_update(chain_id: str, req: UpdateChainRequest) -> dict:
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
+        chain = _load_chain_or_404(chain_id)
         if req.name is not None:
             chain.name = req.name
         if req.description is not None:
@@ -907,43 +1033,51 @@ def register_industry_chain_routes(
             chain.market = req.market
         if req.segments is not None:
             chain.segments = [Segment.from_dict(s) for s in req.segments]
-        _store.save_chain(chain)
+        try:
+            _store.save_chain(chain, expected_version=req.row_version)
+        except ConcurrentUpdateError as exc:
+            raise HTTPException(status_code=409, detail="Chain was updated by another request; reload and retry") from exc
         return {"status": "updated", "chain": chain.to_dict()}
 
     @app.delete("/industry-chain/{chain_id}", dependencies=[Depends(require_auth)])
     async def industry_chain_delete(chain_id: str) -> dict:
-        if not _store.delete_chain(chain_id):
+        try:
+            deleted = _store.delete_chain(chain_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not deleted:
             raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
         return {"status": "deleted", "chain_id": chain_id}
 
     @app.post("/industry-chain/{chain_id}/analyze", dependencies=[Depends(require_auth)])
-    async def industry_chain_analyze(chain_id: str, req: AnalyzeRequest) -> dict:
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
-
-        market = req.market or chain.market
-        segments_csv = ",".join(s.name for s in chain.segments)
-        user_vars = {"topic": chain.name, "market": market, "segments": segments_csv}
-
-        runtime = get_swarm_runtime()
+    async def industry_chain_analyze(
+        chain_id: str,
+        req: AnalyzeRequest,
+        idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict:
+        """Queue an idempotent analysis launch instead of starting ad hoc work."""
+        _load_chain_or_404(chain_id)
         try:
-            run = runtime.start_run(_PRESET_NAME, user_vars)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            job = refresh_service.request_analysis(
+                chain_id,
+                market=req.market,
+                idempotency_key=idempotency_key,
+            )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-        chain.swarm_run_id = run.id
-        chain.status = STATUS_ANALYZING
-        _store.save_chain(chain)
-        return {"status": "analyzing", "chain_id": chain_id, "run_id": run.id}
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        run_id = str((job.result or {}).get("run_id") or job.payload.get("run_id") or "")
+        return {
+            "status": "analyzing" if run_id else "queued",
+            "chain_id": chain_id,
+            "run_id": run_id,
+            "job_id": job.job_id,
+        }
 
     @app.get("/industry-chain/{chain_id}/status", dependencies=[Depends(require_auth)])
     async def industry_chain_status(chain_id: str) -> dict:
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
+        chain = _load_chain_or_404(chain_id)
         if not chain.swarm_run_id:
             return {"chain_id": chain_id, "status": chain.status, "run_id": ""}
 
@@ -955,20 +1089,24 @@ def register_industry_chain_routes(
         run_status = run.status.value
 
         ingested = False
-        # On first completion, parse the director output back into segments.
-        # Combine all task summaries so the markdown parser has full context.
+        # A completed run becomes ready only if its final director report
+        # satisfies the strict structured-evidence contract. Task summaries
+        # are deliberately never scraped as substitute facts.
         if run_status == "completed" and chain.status != STATUS_READY:
-            all_text = "\n\n".join(t.summary or "" for t in run.tasks if t.summary)
-            combined = (run.final_report or "") + "\n\n" + all_text
-            if _ingest(chain, combined, final_report=run.final_report or ""):
+            if _ingest(chain, run.final_report or ""):
                 chain.status = STATUS_READY
+                chain.last_error = ""
                 _store.save_chain(chain)
                 _store.append_history(chain_id, _snapshot(chain))
                 ingested = True
             else:
-                logger.warning("Chain %s: run completed but no structured data found", chain_id)
+                chain.status = STATUS_ERROR
+                chain.last_error = "分析结果缺少有效的结构化证据契约，未写入任何研究结论。"
+                _store.save_chain(chain)
+                logger.warning("Chain %s: completed run rejected by research schema", chain_id)
         elif run_status in ("failed", "cancelled") and chain.status == STATUS_ANALYZING:
             chain.status = STATUS_ERROR
+            chain.last_error = f"Swarm run {run_status}"
             _store.save_chain(chain)
 
         return {
@@ -979,14 +1117,63 @@ def register_industry_chain_routes(
             "ingested": ingested,
             "task_count": len(run.tasks),
             "completed_count": sum(1 for t in run.tasks if t.status.value == "completed"),
+            "error": chain.last_error,
         }
+
+    @app.post("/industry-chain/{chain_id}/cancel", dependencies=[Depends(require_auth)])
+    async def industry_chain_cancel(chain_id: str) -> dict:
+        chain = _load_chain_or_404(chain_id)
+        cancelled = False
+        if chain.swarm_run_id:
+            cancelled = bool(get_swarm_runtime().cancel_run(chain.swarm_run_id))
+        chain.status = STATUS_ERROR
+        chain.last_error = "分析已取消"
+        _store.save_chain(chain)
+        return {"status": "cancelled", "chain_id": chain_id, "cancelled": cancelled}
+
+    @app.post("/industry-chain/{chain_id}/retry", dependencies=[Depends(require_auth)])
+    async def industry_chain_retry(chain_id: str) -> dict:
+        chain = _load_chain_or_404(chain_id)
+        if chain.status == STATUS_ANALYZING:
+            raise HTTPException(status_code=409, detail="Cannot retry an active analysis; cancel it first")
+        job = refresh_service.request_analysis(chain_id, market=chain.market, trigger="retry")
+        run_id = str((job.result or {}).get("run_id") or job.payload.get("run_id") or "")
+        return {"status": "analyzing" if run_id else "queued", "chain_id": chain_id, "run_id": run_id, "job_id": job.job_id}
+
+    @app.get("/industry-chain/refresh-jobs/{job_id}", dependencies=[Depends(require_auth)])
+    async def industry_chain_refresh_job(job_id: str) -> dict:
+        job = refresh_service.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Refresh job {job_id} not found")
+        return {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "attempts": job.attempts,
+            "max_attempts": job.max_attempts,
+            "error": job.error,
+            "run_id": (job.result or {}).get("run_id"),
+        }
+
+    @app.post("/industry-chain/refresh-jobs/{job_id}/retry", dependencies=[Depends(require_auth)])
+    async def industry_chain_retry_refresh_job(job_id: str) -> dict:
+        try:
+            job = refresh_service.retry(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Refresh job {job_id} not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job_id": job.job_id, "status": job.status.value}
+
+    @app.post("/industry-chain/refresh-jobs/{job_id}/cancel", dependencies=[Depends(require_auth)])
+    async def industry_chain_cancel_refresh_job(job_id: str) -> dict:
+        if not refresh_service.cancel(job_id):
+            raise HTTPException(status_code=404, detail=f"Active refresh job {job_id} not found")
+        return {"job_id": job_id, "status": "cancelled"}
 
     @app.post("/industry-chain/{chain_id}/reingest", dependencies=[Depends(require_auth)])
     async def industry_chain_reingest(chain_id: str) -> dict:
-        """Re-parse swarm output into chain segments using the improved parser."""
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
+        """Re-validate a completed director report; no prose fallback exists."""
+        chain = _load_chain_or_404(chain_id)
         if not chain.swarm_run_id:
             raise HTTPException(status_code=400, detail="No swarm run to re-ingest")
         runtime = get_swarm_runtime()
@@ -996,40 +1183,56 @@ def register_industry_chain_routes(
         run = runtime._store.reconcile_run(loaded, write=False)
         if run.status.value != "completed":
             raise HTTPException(status_code=400, detail=f"Run status is {run.status.value}, not completed")
-        # Reset segment fields so stale data from prior ingests is cleared.
-        for seg in chain.segments:
-            seg.name_en = ""
-            seg.international_competition = ""
-            seg.domestic_competition = ""
-            seg.barrier_type = ""
-            seg.barrier_description = ""
-            seg.chokepoint_score = {}
-            seg.chokepoint_total = None
-            seg.tickers = []
-            seg.status = "pending"
-        chain.overview.core_targets = []
-        all_text = "\n\n".join(t.summary or "" for t in run.tasks if t.summary)
-        combined = (run.final_report or "") + "\n\n" + all_text
-        ok = _ingest(chain, combined, final_report=run.final_report or "")
+        ok = _ingest(chain, run.final_report or "")
         if ok:
             chain.status = STATUS_READY
+            chain.last_error = ""
+            _store.save_chain(chain)
+            _store.append_history(chain_id, _snapshot(chain))
+        else:
+            chain.status = STATUS_ERROR
+            chain.last_error = "分析结果缺少有效的结构化证据契约，未写入任何研究结论。"
             _store.save_chain(chain)
         return {"chain_id": chain_id, "ingested": ok}
 
     @app.get("/industry-chain/{chain_id}/history", dependencies=[Depends(require_auth)])
     async def industry_chain_history(chain_id: str) -> dict:
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
+        _load_chain_or_404(chain_id)
         return {"chain_id": chain_id, "snapshots": _store.load_history(chain_id)}
+
+    @app.get("/industry-chain/{chain_id}/history/compare", dependencies=[Depends(require_auth)])
+    async def industry_chain_history_compare(chain_id: str, from_snapshot: str, to_snapshot: str) -> dict:
+        """Return an explicit historic diff rather than comparing mutable state."""
+        _load_chain_or_404(chain_id)
+        before = _store.get_snapshot(chain_id, from_snapshot)
+        after = _store.get_snapshot(chain_id, to_snapshot)
+        if before is None or after is None:
+            raise HTTPException(status_code=404, detail="One or both snapshots were not found")
+        before_scores = dict(before.get("segment_scores") or {})
+        after_scores = dict(after.get("segment_scores") or {})
+        names = sorted(set(before_scores) | set(after_scores))
+        return {
+            "chain_id": chain_id,
+            "from": before,
+            "to": after,
+            "changes": {
+                "prosperity_score": _difference(before.get("prosperity_score"), after.get("prosperity_score")),
+                "sector_score": _difference(before.get("sector_score"), after.get("sector_score")),
+                "segment_scores": {
+                    name: _difference(before_scores.get(name), after_scores.get(name)) for name in names
+                },
+                "evidence_states": {
+                    "from": before.get("segment_evidence_states", {}),
+                    "to": after.get("segment_evidence_states", {}),
+                },
+            },
+        }
 
     @app.get("/industry-chain/{chain_id}/swarm-detail", dependencies=[Depends(require_auth)])
     async def industry_chain_swarm_detail(chain_id: str) -> dict:
         """Return structured swarm analysis detail: per-task summaries,
         quality grades, and cross-validation results extracted from events."""
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
+        chain = _load_chain_or_404(chain_id)
         if not chain.swarm_run_id:
             return {"chain_id": chain_id, "run_id": "", "tasks": [], "quality": [], "cross_validation": []}
 
@@ -1100,57 +1303,14 @@ def register_industry_chain_routes(
 
     @app.put("/industry-chain/{chain_id}/schedule", dependencies=[Depends(require_auth)])
     async def industry_chain_schedule(chain_id: str, req: ScheduleRequest) -> dict:
-        """Set or clear the periodic refresh schedule for a chain."""
-        chain = _store.get_chain(chain_id)
-        if chain is None:
-            raise HTTPException(status_code=404, detail=f"Chain {chain_id} not found")
-        if req.schedule and req.schedule not in ("weekly", "monthly"):
-            raise HTTPException(status_code=400, detail="schedule must be '', 'weekly', or 'monthly'")
-        chain.refresh_schedule = req.schedule
-        _store.save_chain(chain)
-        return {"status": "updated", "chain_id": chain_id, "refresh_schedule": chain.refresh_schedule}
-
-    @app.get("/industry-chain/compare", dependencies=[Depends(require_auth)])
-    async def industry_chain_compare(ids: str = "") -> dict:
-        """Compare multiple chains side-by-side.
-
-        Query param ``ids`` is a comma-separated list of chain_ids. Returns
-        each chain's overview + per-segment chokepoint totals + shared tickers.
-        """
-        chain_ids = [cid.strip() for cid in ids.split(",") if cid.strip()]
-        if len(chain_ids) < 2:
-            raise HTTPException(status_code=400, detail="Provide at least 2 chain ids (comma-separated)")
-
-        chains_data = []
-        all_tickers: dict = {}  # code -> set of chain names
-        for cid in chain_ids:
-            chain = _store.get_chain(cid)
-            if chain is None:
-                continue
-            segment_scores = {s.name: s.chokepoint_total for s in chain.segments if s.chokepoint_total is not None}
-            chains_data.append({
-                "chain_id": chain.chain_id,
-                "name": chain.name,
-                "status": chain.status,
-                "lifecycle_stage": chain.overview.lifecycle_stage,
-                "prosperity_score": chain.overview.prosperity_score,
-                "sector_score": chain.overview.sector_score,
-                "segment_scores": segment_scores,
-                "segment_names": [s.name for s in chain.segments],
-            })
-            for seg in chain.segments:
-                for tk in seg.tickers:
-                    if tk.code not in all_tickers:
-                        all_tickers[tk.code] = {"code": tk.code, "name": tk.name, "chains": []}
-                    all_tickers[tk.code]["chains"].append(chain.name)
-
-        shared_tickers = [v for v in all_tickers.values() if len(v["chains"]) >= 2]
-        shared_tickers.sort(key=lambda x: len(x["chains"]), reverse=True)
-
-        return {
-            "chains": chains_data,
-            "shared_tickers": shared_tickers[:20],
-        }
+        chain = _load_chain_or_404(chain_id)
+        try:
+            schedule = refresh_service.configure_schedule(chain, req.schedule, expected_version=req.row_version)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ConcurrentUpdateError as exc:
+            raise HTTPException(status_code=409, detail="Chain was updated by another request; reload and retry") from exc
+        return {"status": "updated", "chain_id": chain_id, "refresh_schedule": chain.refresh_schedule, "schedule": schedule}
 
     # -- Hypothesis management (tags hypotheses by chain name in universe) --
 

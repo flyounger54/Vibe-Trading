@@ -1,26 +1,17 @@
-"""Crash-safe store for industry-chain research dashboards.
+"""Unified durable store for industry-chain research dashboards.
 
-Each chain lives in its own directory under the user runtime root
-(``~/.vibe-trading/industry_chains/{chain_id}/``), holding two files:
-
-* ``chain.json``   — the full current state (metadata + overview + segments).
-* ``history.json`` — append-only analysis snapshots for prosperity time-series.
-
-Both use the same atomic write pattern as
-``src.scheduled_research.store`` (temp file in the same dir -> fsync ->
-``os.replace`` -> fsync parent dir) so a SIGKILL at any point leaves either the
-old complete file or the new one, never a partial write.
-
-The analysis itself is delegated to the ``supply_chain_research_team`` swarm;
-this module only persists the structured result. Segment scoring fields mirror
-the 6-dimension chokepoint framework so the dashboard can render them directly.
+Current state, immutable history snapshots, and refresh schedules all live in
+the shared SQLite :class:`~src.state.database.StateDatabase`.  The old
+``industry_chains/<id>/{chain,history}.json`` layout is read once as a
+compatibility import; it is never the authoritative write path.  This gives
+industry research the same WAL durability, optimistic concurrency, and
+restart semantics as sessions, swarm runs, and jobs.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -29,12 +20,13 @@ from typing import Any, Dict, List, Optional
 
 from src.config.paths import get_runtime_root
 from src.security.boundaries import resolve_within_root
+from src.state.database import ConcurrentUpdateError, StateDatabase, default_state_db_path
 
 logger = logging.getLogger(__name__)
 
 _CHAIN_FILENAME = "chain.json"
 _HISTORY_FILENAME = "history.json"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 # Chain lifecycle status values.
 STATUS_DRAFT = "draft"
@@ -86,6 +78,8 @@ class Ticker:
     confidence: str = ""
     key_products: str = ""
     red_team_note: str = ""
+    evidence_ids: List[str] = field(default_factory=list)
+    evidence_state: str = "missing"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Ticker":
@@ -100,6 +94,8 @@ class Ticker:
             confidence=str(data.get("confidence", "")),
             key_products=str(data.get("key_products", "")),
             red_team_note=str(data.get("red_team_note", "")),
+            evidence_ids=[str(item) for item in (data.get("evidence_ids") or [])],
+            evidence_state=str(data.get("evidence_state", "missing")),
         )
 
 
@@ -127,6 +123,8 @@ class Segment:
     chokepoint_total: Optional[float] = None
     status: str = "empty"  # empty | partial | complete
     tickers: List[Ticker] = field(default_factory=list)
+    evidence_ids: List[str] = field(default_factory=list)
+    evidence_state: str = "missing"  # supported | stale | conflicting | missing
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Segment":
@@ -147,6 +145,8 @@ class Segment:
             chokepoint_total=_as_float(data.get("chokepoint_total")),
             status=str(data.get("status", "empty")),
             tickers=[Ticker.from_dict(t) for t in (data.get("tickers") or [])],
+            evidence_ids=[str(item) for item in (data.get("evidence_ids") or [])],
+            evidence_state=str(data.get("evidence_state", "missing")),
         )
 
 
@@ -164,6 +164,8 @@ class ChainOverview:
     prosperity_score: Optional[float] = None  # 0-100 chain-level
     sector_score: Optional[float] = None
     core_targets: List[Ticker] = field(default_factory=list)
+    evidence_ids: List[str] = field(default_factory=list)
+    evidence_state: str = "missing"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChainOverview":
@@ -174,6 +176,8 @@ class ChainOverview:
             prosperity_score=_as_float(data.get("prosperity_score")),
             sector_score=_as_float(data.get("sector_score")),
             core_targets=[Ticker.from_dict(t) for t in (data.get("core_targets") or [])],
+            evidence_ids=[str(item) for item in (data.get("evidence_ids") or [])],
+            evidence_state=str(data.get("evidence_state", "missing")),
         )
 
 
@@ -189,11 +193,22 @@ class Chain:
     status: str = STATUS_DRAFT
     template_key: str = ""  # which template seeded it, "" for custom
     swarm_run_id: str = ""  # last analysis run
+    refresh_job_id: str = ""  # durable launch job that created swarm_run_id
     refresh_schedule: str = ""  # "" | "weekly" | "monthly"
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
     overview: ChainOverview = field(default_factory=ChainOverview)
     segments: List[Segment] = field(default_factory=list)
+    # Structured research graph.  Unknown legacy payloads remain readable,
+    # while new ingests require the schema validated before they reach here.
+    nodes: List[Dict[str, Any]] = field(default_factory=list)
+    edges: List[Dict[str, Any]] = field(default_factory=list)
+    evidence: List[Dict[str, Any]] = field(default_factory=list)
+    conflicts: List[Dict[str, Any]] = field(default_factory=list)
+    as_of: str = ""
+    research_version: int = 0
+    row_version: int = 0
+    last_error: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-ready dict."""
@@ -211,11 +226,20 @@ class Chain:
             status=str(data.get("status", STATUS_DRAFT)),
             template_key=str(data.get("template_key", "")),
             swarm_run_id=str(data.get("swarm_run_id", "")),
+            refresh_job_id=str(data.get("refresh_job_id", "")),
             refresh_schedule=str(data.get("refresh_schedule", "")),
             created_at=str(data.get("created_at") or _now_iso()),
             updated_at=str(data.get("updated_at") or _now_iso()),
             overview=ChainOverview.from_dict(data.get("overview") or {}),
             segments=[Segment.from_dict(s) for s in (data.get("segments") or [])],
+            nodes=[dict(item) for item in (data.get("nodes") or []) if isinstance(item, dict)],
+            edges=[dict(item) for item in (data.get("edges") or []) if isinstance(item, dict)],
+            evidence=[dict(item) for item in (data.get("evidence") or []) if isinstance(item, dict)],
+            conflicts=[dict(item) for item in (data.get("conflicts") or []) if isinstance(item, dict)],
+            as_of=str(data.get("as_of", "")),
+            research_version=int(data.get("research_version", 0) or 0),
+            row_version=int(data.get("row_version", 0) or 0),
+            last_error=str(data.get("last_error", "")),
         )
 
     def summary(self) -> Dict[str, Any]:
@@ -233,6 +257,9 @@ class Chain:
             "prosperity_score": self.overview.prosperity_score,
             "refresh_schedule": self.refresh_schedule,
             "updated_at": self.updated_at,
+            "as_of": self.as_of,
+            "research_version": self.research_version,
+            "row_version": self.row_version,
         }
 
 
@@ -252,168 +279,198 @@ def _as_float(value: Any) -> Optional[float]:
 
 
 class IndustryChainStore:
-    """Durable, crash-safe persistence for industry-chain dashboards.
+    """Industry-chain state on the shared SQLite WAL database.
 
-    The store owns only serialization and atomic I/O. Each chain is a directory
-    under :attr:`root` containing ``chain.json`` and ``history.json``.
-
-    Attributes:
-        root: Directory holding one subdirectory per chain.
+    ``root`` remains a compatibility input for importing older per-directory
+    JSON state and for boundary tests.  Supplying it never switches new writes
+    back to files: an adjacent SQLite database remains the source of truth.
     """
 
-    def __init__(self, root: Optional[Path] = None) -> None:
-        """Initialize the store.
-
-        Args:
-            root: Explicit root directory. Defaults to
-                ``~/.vibe-trading/industry_chains``.
-        """
-        self.root: Path = root if root is not None else get_runtime_root() / "industry_chains"
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def __init__(
+        self,
+        root: Optional[Path] = None,
+        *,
+        database: Optional[StateDatabase] = None,
+        database_path: Optional[Path] = None,
+    ) -> None:
+        self.root = root if root is not None else get_runtime_root() / "industry_chains"
+        db_path = database_path or (self.root.parent / "state" / "vibe.db" if root else default_state_db_path())
+        self.database = database or StateDatabase(db_path)
+        self._legacy_checked = False
 
     def list_chains(self) -> List[Chain]:
-        """Load all chains, newest-updated first.
-
-        Returns:
-            All persisted chains. Empty when none exist. A single corrupt
-            chain file is logged and skipped rather than aborting the listing.
-        """
-        if not self.root.exists():
-            return []
-        chains: List[Chain] = []
-        for child in self.root.iterdir():
-            if not child.is_dir() or child.is_symlink():
-                continue
-            chain = self._load_chain_file(child / _CHAIN_FILENAME)
-            if chain is not None:
-                chains.append(chain)
-        chains.sort(key=lambda c: c.updated_at, reverse=True)
-        return chains
+        """Return all chains ordered by most recently updated state."""
+        self._import_legacy_once()
+        chains = [self._decode_chain(payload, version) for _, payload, version in self.database.list_records("industry_chain")]
+        return [chain for chain in chains if chain is not None]
 
     def get_chain(self, chain_id: str) -> Optional[Chain]:
-        """Return a chain by id, or ``None`` when it does not exist."""
-        return self._load_chain_file(self._chain_dir(chain_id) / _CHAIN_FILENAME)
+        """Return a chain and its authoritative optimistic-lock version."""
+        self._chain_dir(chain_id)  # Validate before touching the database.
+        self._import_legacy_once()
+        record = self.database.get_record("industry_chain", chain_id)
+        if record is None:
+            return None
+        return self._decode_chain(*record)
 
-    def save_chain(self, chain: Chain) -> Chain:
-        """Persist a chain (full object), refreshing ``updated_at``.
+    def save_chain(self, chain: Chain, *, expected_version: Optional[int] = None) -> Chain:
+        """Persist ``chain`` with compare-and-swap protection.
 
-        Args:
-            chain: The chain to store.
-
-        Returns:
-            The same chain instance with ``updated_at`` bumped.
+        A stale caller receives :class:`ConcurrentUpdateError` instead of
+        silently replacing a newer research result or user edit.
         """
+        self._chain_dir(chain.chain_id)
+        self._import_legacy_once()
         chain.updated_at = _now_iso()
-        target = self._chain_dir(chain.chain_id) / _CHAIN_FILENAME
-        self._atomic_write_json(target, self._envelope(chain.to_dict()))
+        expected = chain.row_version if expected_version is None else expected_version
+        version = self.database.upsert_record(
+            "industry_chain",
+            chain.chain_id,
+            chain.to_dict(),
+            expected_version=expected if expected > 0 else 0,
+        )
+        chain.row_version = version
         return chain
 
     def delete_chain(self, chain_id: str) -> bool:
-        """Delete a chain and all its files.
+        """Delete current state plus its snapshots and refresh definition."""
+        self._chain_dir(chain_id)
+        self._import_legacy_once()
+        deleted = self.database.delete_record("industry_chain", chain_id)
+        self.database.delete_record("industry_chain_schedule", chain_id)
+        for record_id, payload, _ in self.database.list_records("industry_chain_history"):
+            if payload.get("chain_id") == chain_id:
+                self.database.delete_record("industry_chain_history", record_id)
+        return deleted
 
-        Returns:
-            ``True`` when a chain directory was removed, ``False`` otherwise.
-        """
-        chain_dir = self._chain_dir(chain_id)
-        if not chain_dir.exists():
-            return False
-        for item in chain_dir.iterdir():
-            try:
-                item.unlink()
-            except OSError:
-                logger.warning("Failed to remove %s", item, exc_info=True)
-        try:
-            chain_dir.rmdir()
-        except OSError:
-            logger.warning("Failed to remove chain dir %s", chain_dir, exc_info=True)
-            return False
-        return True
-
-    def append_history(self, chain_id: str, snapshot: Dict[str, Any]) -> None:
-        """Append a timestamped analysis snapshot for prosperity time-series.
-
-        Args:
-            chain_id: Target chain id.
-            snapshot: Arbitrary JSON-serializable summary (e.g. lifecycle stage,
-                prosperity score, top segment scores) at analysis time.
-        """
-        history = self.load_history(chain_id)
-        entry = {"recorded_at": _now_iso(), **snapshot}
-        history.append(entry)
-        target = self._chain_dir(chain_id) / _HISTORY_FILENAME
-        self._atomic_write_json(target, {"schema_version": _SCHEMA_VERSION, "snapshots": history})
+    def append_history(self, chain_id: str, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Write an immutable, versioned snapshot for comparison/audit."""
+        self._chain_dir(chain_id)
+        entry = {
+            "snapshot_id": uuid.uuid4().hex,
+            "chain_id": chain_id,
+            "recorded_at": _now_iso(),
+            **snapshot,
+        }
+        self.database.upsert_record(
+            "industry_chain_history",
+            f"{chain_id}:{entry['snapshot_id']}",
+            entry,
+            expected_version=0,
+        )
+        return entry
 
     def load_history(self, chain_id: str) -> List[Dict[str, Any]]:
-        """Return the analysis-snapshot history for a chain (oldest first)."""
-        path = self._chain_dir(chain_id) / _HISTORY_FILENAME
+        """Return immutable snapshots oldest first."""
+        self._chain_dir(chain_id)
+        self._import_legacy_once()
+        snapshots = [
+            dict(payload)
+            for _, payload, _ in self.database.list_records("industry_chain_history")
+            if payload.get("chain_id") == chain_id
+        ]
+        return sorted(snapshots, key=lambda item: str(item.get("recorded_at", "")))
+
+    def get_snapshot(self, chain_id: str, snapshot_id: str) -> Optional[Dict[str, Any]]:
+        """Return one snapshot, scoped to its owning chain."""
+        self._chain_dir(chain_id)
+        record = self.database.get_record("industry_chain_history", f"{chain_id}:{snapshot_id}")
+        if record is None or record[0].get("chain_id") != chain_id:
+            return None
+        return dict(record[0])
+
+    def save_schedule(
+        self,
+        chain_id: str,
+        schedule: str,
+        *,
+        next_due_at: float | None,
+        expected_version: int | None = None,
+    ) -> Dict[str, Any]:
+        """Persist refresh schedule separately from mutable chain content."""
+        self._chain_dir(chain_id)
+        current = self.database.get_record("industry_chain_schedule", chain_id)
+        current_version = current[1] if current else 0
+        payload = {
+            "chain_id": chain_id,
+            "schedule": schedule,
+            "next_due_at": next_due_at,
+            "updated_at": _now_iso(),
+        }
+        version = self.database.upsert_record(
+            "industry_chain_schedule",
+            chain_id,
+            payload,
+            expected_version=current_version if expected_version is None else expected_version,
+        )
+        payload["row_version"] = version
+        return payload
+
+    def get_schedule(self, chain_id: str) -> Optional[Dict[str, Any]]:
+        self._chain_dir(chain_id)
+        record = self.database.get_record("industry_chain_schedule", chain_id)
+        if record is None:
+            return None
+        payload, version = record
+        return {**payload, "row_version": version}
+
+    def list_schedules(self) -> List[Dict[str, Any]]:
+        return [{**payload, "row_version": version} for _, payload, version in self.database.list_records("industry_chain_schedule")]
+
+    def _chain_dir(self, chain_id: str) -> Path:
+        """Validate a chain identifier against the legacy filesystem root."""
+        return resolve_within_root(self.root, chain_id, kind="chain_id")
+
+    @staticmethod
+    def _decode_chain(payload: Dict[str, Any], version: int) -> Optional[Chain]:
+        try:
+            chain = Chain.from_dict(payload)
+            chain.row_version = version
+            return chain
+        except (TypeError, ValueError) as exc:
+            logger.warning("Skipping corrupt industry-chain state: %s", exc)
+            return None
+
+    def _import_legacy_once(self) -> None:
+        """One-time, non-destructive import of Node-8 JSON state."""
+        if self._legacy_checked:
+            return
+        self._legacy_checked = True
+        if self.database.list_records("industry_chain") or not self.root.exists():
+            return
+        for child in self.root.iterdir():
+            if not child.is_dir() or child.is_symlink():
+                continue
+            chain = self._load_legacy_chain(child / _CHAIN_FILENAME)
+            if chain is None:
+                continue
+            try:
+                self.save_chain(chain, expected_version=0)
+            except ConcurrentUpdateError:
+                continue
+            history_path = child / _HISTORY_FILENAME
+            for snapshot in self._load_legacy_history(history_path):
+                self.append_history(chain.chain_id, snapshot)
+
+    @staticmethod
+    def _load_legacy_chain(path: Path) -> Optional[Chain]:
+        if not path.exists():
+            return None
+        try:
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+            return Chain.from_dict(envelope.get("chain", envelope))
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Skipping legacy chain file %s: %s", path, exc)
+            return None
+
+    @staticmethod
+    def _load_legacy_history(path: Path) -> List[Dict[str, Any]]:
         if not path.exists():
             return []
         try:
             envelope = json.loads(path.read_text(encoding="utf-8"))
             snapshots = envelope.get("snapshots", [])
-            return snapshots if isinstance(snapshots, list) else []
-        except (OSError, ValueError) as exc:
-            logger.warning("Failed to read history for %s: %s", chain_id, exc)
-            return []
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _chain_dir(self, chain_id: str) -> Path:
-        """Return the directory for a chain (not necessarily existing)."""
-        return resolve_within_root(self.root, chain_id, kind="chain_id")
-
-    def _load_chain_file(self, path: Path) -> Optional[Chain]:
-        """Load and parse a chain.json file, or None on missing/corrupt."""
-        if not path.exists():
-            return None
-        try:
-            envelope = json.loads(path.read_text(encoding="utf-8"))
-            payload = envelope.get("chain", envelope)
-            return Chain.from_dict(payload)
+            return [dict(item) for item in snapshots if isinstance(item, dict)]
         except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Skipping corrupt chain file %s: %s", path, exc)
-            return None
-
-    @staticmethod
-    def _envelope(chain_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """Wrap a chain dict with a schema version for forward-compat."""
-        return {"schema_version": _SCHEMA_VERSION, "chain": chain_dict}
-
-    @staticmethod
-    def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
-        """Atomically write JSON: temp -> fsync -> replace -> fsync dir.
-
-        Mirrors ``src.scheduled_research.store`` so a crash at any step leaves
-        either the old complete file or the new one, never a partial write.
-        """
-        target.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(payload, ensure_ascii=False, indent=2)
-        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, data.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(tmp, target)
-        IndustryChainStore._fsync_dir(target.parent)
-
-    @staticmethod
-    def _fsync_dir(directory: Path) -> None:
-        """fsync a directory so a rename is durable. Best-effort on platforms
-        that disallow opening a directory."""
-        try:
-            dir_fd = os.open(directory, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(dir_fd)
-        except OSError:
-            pass
-        finally:
-            os.close(dir_fd)
+            logger.warning("Skipping legacy history file %s: %s", path, exc)
+            return []

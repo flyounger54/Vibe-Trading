@@ -1,4 +1,5 @@
 import { type ReactNode } from "react";
+import type { EvidenceState } from "@/lib/api";
 
 const TAG_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   P0: { bg: "bg-green-500/15", text: "text-green-600 dark:text-green-400", label: "P0 公司披露" },
@@ -54,6 +55,23 @@ export function EvidenceTierBadge({ tier }: { tier: string }) {
   return (
     <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${style.bg} ${style.text}`}>
       {tier}
+    </span>
+  );
+}
+
+const STATE_STYLES: Record<EvidenceState, { cls: string; label: string }> = {
+  supported: { cls: "bg-green-500/15 text-green-700 dark:text-green-300", label: "证据已核验" },
+  stale: { cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300", label: "证据已过期" },
+  conflicting: { cls: "bg-red-500/15 text-red-700 dark:text-red-300", label: "证据存在冲突" },
+  missing: { cls: "bg-muted text-muted-foreground", label: "缺少可核验证据" },
+};
+
+/** An explicit state marker prevents uncertain research from reading as fact. */
+export function EvidenceStateBadge({ state }: { state: EvidenceState }) {
+  const style = STATE_STYLES[state] ?? STATE_STYLES.missing;
+  return (
+    <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${style.cls}`}>
+      {style.label}
     </span>
   );
 }

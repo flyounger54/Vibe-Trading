@@ -125,7 +125,16 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (1, _SCHEMA_V1),
     (2, _SCHEMA_V2),
 )
-_RECORD_TYPES = {"job", "swarm_run", "schedule"}
+# Every durable product surface must use this shared state database.  Keep the
+# allow-list explicit so a typo cannot silently create an ungoverned namespace.
+_RECORD_TYPES = {
+    "job",
+    "swarm_run",
+    "schedule",
+    "industry_chain",
+    "industry_chain_history",
+    "industry_chain_schedule",
+}
 
 
 class ConcurrentUpdateError(RuntimeError):

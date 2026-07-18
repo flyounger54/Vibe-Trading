@@ -2413,6 +2413,17 @@
       "ScheduleRequest": {
         "description": "Set or clear the periodic refresh schedule.",
         "properties": {
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
+          },
           "schedule": {
             "default": "",
             "title": "Schedule",
@@ -2714,6 +2725,17 @@
               }
             ],
             "title": "Name"
+          },
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
           },
           "segments": {
             "anyOf": [
@@ -3937,7 +3959,6 @@
     },
     "/api/v1/industry-chain/compare": {
       "get": {
-        "description": "Compare multiple chains side-by-side.\n\nQuery param ``ids`` is a comma-separated list of chain_ids. Returns\neach chain's overview + per-segment chokepoint totals + shared tickers.",
         "operationId": "v1_industry_chain_compare_api_v1_industry_chain_compare_get",
         "parameters": [
           {
@@ -4003,7 +4024,159 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "V1 Industry Chain List",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/industry-chain/refresh-jobs/{job_id}": {
+      "get": {
+        "operationId": "v1_industry_chain_refresh_job_api_v1_industry_chain_refresh_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response V1 Industry Chain Refresh Job Api V1 Industry Chain Refresh Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Industry Chain Refresh Job",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/industry-chain/refresh-jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "v1_industry_chain_cancel_refresh_job_api_v1_industry_chain_refresh_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response V1 Industry Chain Cancel Refresh Job Api V1 Industry Chain Refresh Jobs  Job Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Industry Chain Cancel Refresh Job",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/industry-chain/refresh-jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "v1_industry_chain_retry_refresh_job_api_v1_industry_chain_refresh_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response V1 Industry Chain Retry Refresh Job Api V1 Industry Chain Refresh Jobs  Job Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Industry Chain Retry Refresh Job",
         "tags": [
           "v1"
         ]
@@ -4026,6 +4199,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "V1 Industry Chain Templates",
         "tags": [
           "v1"
@@ -4070,6 +4248,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "V1 Industry Chain Detail",
         "tags": [
           "v1"
@@ -4078,6 +4261,7 @@
     },
     "/api/v1/industry-chain/{chain_id}/analyze": {
       "post": {
+        "description": "Queue an idempotent analysis launch instead of starting ad hoc work.",
         "operationId": "v1_industry_chain_analyze_api_v1_industry_chain__chain_id__analyze_post",
         "parameters": [
           {
@@ -4087,6 +4271,22 @@
             "schema": {
               "title": "Chain Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -4130,6 +4330,55 @@
           }
         ],
         "summary": "V1 Industry Chain Analyze",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/industry-chain/{chain_id}/cancel": {
+      "post": {
+        "operationId": "v1_industry_chain_cancel_api_v1_industry_chain__chain_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chain_id",
+            "required": true,
+            "schema": {
+              "title": "Chain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response V1 Industry Chain Cancel Api V1 Industry Chain  Chain Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Industry Chain Cancel",
         "tags": [
           "v1"
         ]
@@ -4234,6 +4483,74 @@
         ]
       }
     },
+    "/api/v1/industry-chain/{chain_id}/history/compare": {
+      "get": {
+        "description": "Return an explicit historic diff rather than comparing mutable state.",
+        "operationId": "v1_industry_chain_history_compare_api_v1_industry_chain__chain_id__history_compare_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chain_id",
+            "required": true,
+            "schema": {
+              "title": "Chain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_snapshot",
+            "required": true,
+            "schema": {
+              "title": "From Snapshot",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_snapshot",
+            "required": true,
+            "schema": {
+              "title": "To Snapshot",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response V1 Industry Chain History Compare Api V1 Industry Chain  Chain Id  History Compare Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Industry Chain History Compare",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
     "/api/v1/industry-chain/{chain_id}/hypotheses": {
       "get": {
         "description": "List hypotheses linked to this chain.",
@@ -4286,7 +4603,7 @@
     },
     "/api/v1/industry-chain/{chain_id}/reingest": {
       "post": {
-        "description": "Re-parse swarm output into chain segments using the improved parser.",
+        "description": "Re-validate a completed director report; no prose fallback exists.",
         "operationId": "v1_industry_chain_reingest_api_v1_industry_chain__chain_id__reingest_post",
         "parameters": [
           {
@@ -4334,9 +4651,57 @@
         ]
       }
     },
+    "/api/v1/industry-chain/{chain_id}/retry": {
+      "post": {
+        "operationId": "v1_industry_chain_retry_api_v1_industry_chain__chain_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chain_id",
+            "required": true,
+            "schema": {
+              "title": "Chain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response V1 Industry Chain Retry Api V1 Industry Chain  Chain Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Industry Chain Retry",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
     "/api/v1/industry-chain/{chain_id}/schedule": {
       "put": {
-        "description": "Set or clear the periodic refresh schedule for a chain.",
         "operationId": "v1_industry_chain_schedule_api_v1_industry_chain__chain_id__schedule_put",
         "parameters": [
           {
@@ -6954,7 +7319,6 @@
     },
     "/industry-chain/compare": {
       "get": {
-        "description": "Compare multiple chains side-by-side.\n\nQuery param ``ids`` is a comma-separated list of chain_ids. Returns\neach chain's overview + per-segment chokepoint totals + shared tickers.",
         "operationId": "industry_chain_compare_industry_chain_compare_get",
         "parameters": [
           {
@@ -7017,7 +7381,150 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Industry Chain List"
+      }
+    },
+    "/industry-chain/refresh-jobs/{job_id}": {
+      "get": {
+        "operationId": "industry_chain_refresh_job_industry_chain_refresh_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Industry Chain Refresh Job Industry Chain Refresh Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Industry Chain Refresh Job"
+      }
+    },
+    "/industry-chain/refresh-jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "industry_chain_cancel_refresh_job_industry_chain_refresh_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Industry Chain Cancel Refresh Job Industry Chain Refresh Jobs  Job Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Industry Chain Cancel Refresh Job"
+      }
+    },
+    "/industry-chain/refresh-jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "industry_chain_retry_refresh_job_industry_chain_refresh_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Industry Chain Retry Refresh Job Industry Chain Refresh Jobs  Job Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Industry Chain Retry Refresh Job"
       }
     },
     "/industry-chain/templates": {
@@ -7037,6 +7544,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Industry Chain Templates"
       }
     },
@@ -7122,6 +7634,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Industry Chain Detail"
       },
       "put": {
@@ -7181,6 +7698,7 @@
     },
     "/industry-chain/{chain_id}/analyze": {
       "post": {
+        "description": "Queue an idempotent analysis launch instead of starting ad hoc work.",
         "operationId": "industry_chain_analyze_industry_chain__chain_id__analyze_post",
         "parameters": [
           {
@@ -7190,6 +7708,22 @@
             "schema": {
               "title": "Chain Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -7233,6 +7767,52 @@
           }
         ],
         "summary": "Industry Chain Analyze"
+      }
+    },
+    "/industry-chain/{chain_id}/cancel": {
+      "post": {
+        "operationId": "industry_chain_cancel_industry_chain__chain_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chain_id",
+            "required": true,
+            "schema": {
+              "title": "Chain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Industry Chain Cancel Industry Chain  Chain Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Industry Chain Cancel"
       }
     },
     "/industry-chain/{chain_id}/export": {
@@ -7326,6 +7906,71 @@
           }
         ],
         "summary": "Industry Chain History"
+      }
+    },
+    "/industry-chain/{chain_id}/history/compare": {
+      "get": {
+        "description": "Return an explicit historic diff rather than comparing mutable state.",
+        "operationId": "industry_chain_history_compare_industry_chain__chain_id__history_compare_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chain_id",
+            "required": true,
+            "schema": {
+              "title": "Chain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_snapshot",
+            "required": true,
+            "schema": {
+              "title": "From Snapshot",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_snapshot",
+            "required": true,
+            "schema": {
+              "title": "To Snapshot",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Industry Chain History Compare Industry Chain  Chain Id  History Compare Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Industry Chain History Compare"
       }
     },
     "/industry-chain/{chain_id}/hypotheses": {
@@ -7432,7 +8077,7 @@
     },
     "/industry-chain/{chain_id}/reingest": {
       "post": {
-        "description": "Re-parse swarm output into chain segments using the improved parser.",
+        "description": "Re-validate a completed director report; no prose fallback exists.",
         "operationId": "industry_chain_reingest_industry_chain__chain_id__reingest_post",
         "parameters": [
           {
@@ -7477,9 +8122,54 @@
         "summary": "Industry Chain Reingest"
       }
     },
+    "/industry-chain/{chain_id}/retry": {
+      "post": {
+        "operationId": "industry_chain_retry_industry_chain__chain_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chain_id",
+            "required": true,
+            "schema": {
+              "title": "Chain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Industry Chain Retry Industry Chain  Chain Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Industry Chain Retry"
+      }
+    },
     "/industry-chain/{chain_id}/schedule": {
       "put": {
-        "description": "Set or clear the periodic refresh schedule for a chain.",
         "operationId": "industry_chain_schedule_industry_chain__chain_id__schedule_put",
         "parameters": [
           {

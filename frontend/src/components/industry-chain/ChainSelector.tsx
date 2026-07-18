@@ -219,8 +219,9 @@ function CreateModal({
         ) : (
           <div className="space-y-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">产业链名称</label>
+              <label htmlFor="industry-chain-name" className="mb-1 block text-xs font-medium text-muted-foreground">产业链名称</label>
               <input
+                id="industry-chain-name"
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
                 placeholder="如：低空经济"
@@ -228,10 +229,11 @@ function CreateModal({
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              <label htmlFor="industry-chain-segments" className="mb-1 block text-xs font-medium text-muted-foreground">
                 环节（逗号或换行分隔，可留空由 AI 自动发现）
               </label>
               <textarea
+                id="industry-chain-segments"
                 value={customSegments}
                 onChange={(e) => setCustomSegments(e.target.value)}
                 placeholder="如：eVTOL整机, 航空发动机, 飞控系统, 复合材料"

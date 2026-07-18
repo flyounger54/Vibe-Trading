@@ -118,41 +118,64 @@ agents:
       - Forbidden: 强烈推荐, 必涨, 保证盈利, 翻倍. Replace with qualified language.
 
       ## Output contract (MANDATORY)
-      First write a short prose summary (2-3 paragraphs). Then output EXACTLY ONE fenced ```json block, and nothing after it, with this shape:
+      First write a short prose summary (2-3 paragraphs). Then output EXACTLY ONE fenced ```json block, and nothing after it. The block MUST be a `research_result` object matching this schema; do not use the old `chain` format and do not emit Markdown tables as a substitute:
 
       ```json
       {
-        "chain": {
-          "structure_summary": "1-2 句话概括这条链的格局与卡口",
-          "lifecycle_stage": "Validation",
-          "prosperity_score": 72,
-          "sector_score": 75,
+        "research_result": {
+          "schema_version": 1,
+          "as_of": "2026-07-18T00:00:00+00:00",
+          "overview": {
+            "structure_summary": "1-2 句话概括这条链的格局与卡口",
+            "lifecycle_stage": "Validation",
+            "prosperity_score": 72,
+            "sector_score": 75,
+            "evidence_ids": ["ev_overview"],
+            "confidence": "medium"
+          },
+          "nodes": [
+            {"node_id": "node_optics", "name": "光模块", "node_type": "component", "description": "高速光互联组件", "evidence_ids": ["ev_optics"], "confidence": "high"}
+          ],
+          "edges": [],
           "segments": [
             {
+              "segment_id": "seg_optics",
               "name": "光模块",
+              "name_en": "Optical Module",
+              "order": 1,
               "positioning": "中游",
-              "value_weight": "约25% [P2 估算]",
-              "localization_rate": "国产化率约40% [P2 估算]",
-              "international_competition": "海外Coherent/Lumentum主导高端 [P1]",
-              "domestic_competition": "中际旭创/新易盛快速追赶 [P1]",
+              "value_weight": "约25%",
+              "localization_rate": "国产化率约40%",
+              "international_competition": "海外Coherent/Lumentum主导高端",
+              "domestic_competition": "中际旭创/新易盛快速追赶",
               "barrier_type": "技术壁垒",
-              "barrier_description": "800G/1.6T光引擎封装与良率 [P1]",
+              "barrier_description": "800G/1.6T光引擎封装与良率",
               "chokepoint_total": 82,
               "chokepoint_score": {"supply_concentration": 18, "irreplaceability": 20, "supply_demand_gap": 14, "certification_barrier": 12, "information_asymmetry": 10, "catalyst_optionality": 8},
-              "tier": "Core",
+              "evidence_ids": ["ev_optics"],
+              "confidence": "medium",
               "tickers": [
-                {"code": "300308.SZ", "name": "中际旭创", "market": "A", "score": 85, "tier": "Core", "classification": "Controller", "confidence": "high", "key_products": "800G光模块", "red_team_note": "估值已部分price-in, 但供需缺口仍大"}
+                {"code": "300308.SZ", "name": "中际旭创", "market": "A", "score": 85, "tier": "Core", "classification": "Controller", "confidence": "high", "key_products": "800G光模块", "red_team_note": "估值已部分price-in, 但供需缺口仍大", "evidence_ids": ["ev_optics"]}
               ]
             }
-          ]
+          ],
+          "evidence": [
+            {"evidence_id": "ev_optics", "claim": "高速光模块供给与竞争格局", "source_name": "公司公告或已核验研报", "source_url": "https://example.com/source", "as_of": "2026-07-18T00:00:00+00:00", "retrieved_at": "2026-07-18T00:00:00+00:00", "expires_at": "2026-10-18T00:00:00+00:00", "confidence": "high", "status": "active"},
+            {"evidence_id": "ev_overview", "claim": "链级景气与生命周期", "source_name": "行业数据来源", "source_url": "https://example.com/overview", "as_of": "2026-07-18T00:00:00+00:00", "retrieved_at": "2026-07-18T00:00:00+00:00", "confidence": "medium", "status": "active"}
+          ],
+          "conflicts": []
         }
       }
       ```
 
       Rules for the JSON:
       - Include ALL analyzed segments in the order given.
+      - Every deterministic overview, segment, node, edge, and ticker conclusion must name its `evidence_ids`. If no source can support it, keep the conclusion qualified, set confidence to `low`, and use an empty evidence list; the UI will label it as inconclusive rather than fact.
+      - Each evidence item requires source_name, source_url, as_of, retrieved_at, confidence, and lifecycle status (`active`, `stale`, `conflicting`, or `missing`). Use RFC3339 timestamps with timezone. A stale or conflicting source must never be silently presented as active.
+      - Put unresolved disagreements in `conflicts` with `status: "open"`, its subject_id, and at least two conflicting evidence IDs.
+      - All node and edge IDs and all segment IDs must be unique, machine-safe ASCII identifiers (`a-z`, `A-Z`, `0-9`, `_`, `-`). Edges must reference node IDs that exist.
       - chokepoint_score keys MUST be exactly: supply_concentration, irreplaceability, supply_demand_gap, certification_barrier, information_asymmetry, catalyst_optionality.
-      - Numbers are plain numbers (no tags inside JSON numeric fields); put [P-tags] only inside string fields.
+      - Numbers are plain numbers (no P-tags inside JSON); their evidence is expressed only through evidence IDs.
       - tier in {Core, Build, Watch, Skip}; classification in {Controller, Integrator, Beneficiary}.
       - The JSON must be valid (parseable by json.loads). Do not add comments or trailing text after the block.
     tools: [bash, read_file, write_file, load_skill]

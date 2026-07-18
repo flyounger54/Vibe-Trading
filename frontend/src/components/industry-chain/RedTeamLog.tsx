@@ -1,6 +1,7 @@
 import { ShieldAlert } from "lucide-react";
 import type { Chain } from "@/lib/api";
 import { TierBadge } from "./ChainOverview";
+import { EvidenceStateBadge } from "./EvidenceBadge";
 
 interface Props {
   chain: Chain;
@@ -13,7 +14,7 @@ export function RedTeamLog({ chain }: Props) {
   const rows = chain.segments
     .map((seg) => ({
       segment: seg.name,
-      tickers: seg.tickers.filter((t) => t.red_team_note),
+      tickers: seg.tickers.filter((t) => t.red_team_note && t.evidence_state === "supported"),
     }))
     .filter((g) => g.tickers.length > 0);
 
@@ -43,6 +44,7 @@ export function RedTeamLog({ chain }: Props) {
                     <span className="font-medium">{tk.name}</span>
                     <span className="font-mono text-xs text-muted-foreground">{tk.code}</span>
                     <TierBadge tier={tk.tier} />
+                    <EvidenceStateBadge state={tk.evidence_state} />
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">{tk.red_team_note}</p>
                 </div>

@@ -2,6 +2,7 @@ import type { ChainSegment } from "@/lib/api";
 import { ChokepointRadar } from "./ChokepointRadar";
 import { TierBadge } from "./ChainOverview";
 import { EvidenceText } from "./EvidenceBadge";
+import { EvidenceStateBadge } from "./EvidenceBadge";
 
 interface Props {
   segment: ChainSegment;
@@ -10,10 +11,12 @@ interface Props {
 /** Per-segment detail: positioning + competition + barrier cards, the
  * 6-dimension chokepoint radar, and the core-target table. */
 export function SegmentDetail({ segment }: Props) {
+  const supported = segment.evidence_state === "supported";
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-semibold">{segment.name}</h2>
+        <EvidenceStateBadge state={segment.evidence_state} />
         {segment.positioning && (
           <span className="rounded-md border px-2 py-0.5 text-xs text-muted-foreground">
             {segment.positioning}
@@ -24,31 +27,45 @@ export function SegmentDetail({ segment }: Props) {
             {segment.barrier_type}
           </span>
         )}
-        {segment.chokepoint_total != null && (
+        {supported && segment.chokepoint_total != null && (
           <span className="rounded-md bg-red-500/15 px-2 py-0.5 text-xs font-semibold text-red-600 dark:text-red-400">
             卡脖子 {segment.chokepoint_total}
           </span>
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-4">
-          <InfoCard label="价值量占比" value={segment.value_weight} />
-          <InfoCard label="国产化进展" value={segment.localization_rate} />
-          <InfoCard label="壁垒说明" value={segment.barrier_description} />
+      {!supported && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4 text-sm text-muted-foreground">
+          此环节的证据{segment.evidence_state === "stale" ? "已过期" : segment.evidence_state === "conflicting" ? "存在冲突" : "不足"}，下方不展示为确定性评分或竞争结论。
         </div>
-        <div className="rounded-md border bg-card p-5">
-          <h3 className="mb-2 text-sm font-semibold text-muted-foreground">6维卡脖子评分</h3>
-          <ChokepointRadar scores={segment.chokepoint_score} />
+      )}
+
+      {supported ? (
+        <>
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-4">
+              <InfoCard label="价值量占比" value={segment.value_weight} />
+              <InfoCard label="国产化进展" value={segment.localization_rate} />
+              <InfoCard label="壁垒说明" value={segment.barrier_description} />
+            </div>
+            <div className="rounded-md border bg-card p-5">
+              <h3 className="mb-2 text-sm font-semibold text-muted-foreground">6维卡脖子评分</h3>
+              <ChokepointRadar scores={segment.chokepoint_score} />
+            </div>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <CompetitionCard title="国际竞争格局" value={segment.international_competition} />
+            <CompetitionCard title="国内竞争格局" value={segment.domestic_competition} />
+          </div>
+
+          <TickerTable segment={segment} />
+        </>
+      ) : (
+        <div className="rounded-md border border-dashed p-5 text-xs text-muted-foreground">
+          等待可核验且未冲突的来源后再显示该环节结论。
         </div>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <CompetitionCard title="国际竞争格局" value={segment.international_competition} />
-        <CompetitionCard title="国内竞争格局" value={segment.domestic_competition} />
-      </div>
-
-      <TickerTable segment={segment} />
+      )}
     </div>
   );
 }

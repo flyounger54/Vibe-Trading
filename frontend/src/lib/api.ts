@@ -360,10 +360,24 @@ export const api = {
     request<{ status: string }>(`/industry-chain/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
-  analyzeChain: (id: string, market?: string) =>
-    request<{ status: string; chain_id: string; run_id: string }>(
+  analyzeChain: (id: string, market?: string, idempotencyKey?: string) =>
+    request<{ status: string; chain_id: string; run_id: string; job_id: string }>(
       `/industry-chain/${encodeURIComponent(id)}/analyze`,
-      { method: "POST", body: JSON.stringify({ market: market ?? null }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ market: market ?? null }),
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      },
+    ),
+  cancelChainAnalysis: (id: string) =>
+    request<{ status: string; chain_id: string; cancelled: boolean }>(
+      `/industry-chain/${encodeURIComponent(id)}/cancel`,
+      { method: "POST" },
+    ),
+  retryChainAnalysis: (id: string) =>
+    request<{ status: string; chain_id: string; run_id: string; job_id: string }>(
+      `/industry-chain/${encodeURIComponent(id)}/retry`,
+      { method: "POST" },
     ),
   getChainStatus: (id: string) =>
     request<ChainStatus>(`/industry-chain/${encodeURIComponent(id)}/status`),
@@ -371,12 +385,16 @@ export const api = {
     request<{ chain_id: string; snapshots: ChainSnapshot[] }>(
       `/industry-chain/${encodeURIComponent(id)}/history`,
     ),
+  compareChainHistory: (id: string, fromSnapshot: string, toSnapshot: string) =>
+    request<ChainHistoryCompare>(
+      `/industry-chain/${encodeURIComponent(id)}/history/compare?from_snapshot=${encodeURIComponent(fromSnapshot)}&to_snapshot=${encodeURIComponent(toSnapshot)}`,
+    ),
   getChainSwarmDetail: (id: string) =>
     request<ChainSwarmDetail>(`/industry-chain/${encodeURIComponent(id)}/swarm-detail`),
-  setChainSchedule: (id: string, schedule: string) =>
+  setChainSchedule: (id: string, schedule: string, rowVersion?: number) =>
     request<{ status: string; chain_id: string; refresh_schedule: string }>(
       `/industry-chain/${encodeURIComponent(id)}/schedule`,
-      { method: "PUT", body: JSON.stringify({ schedule }) },
+      { method: "PUT", body: JSON.stringify({ schedule, row_version: rowVersion ?? null }) },
     ),
   compareChains: (ids: string) =>
     request<ChainCompareResult>(`/industry-chain/compare?ids=${encodeURIComponent(ids)}`),
@@ -1163,6 +1181,8 @@ export interface ChainTicker {
   confidence: string;
   key_products: string;
   red_team_note: string;
+  evidence_ids: string[];
+  evidence_state: EvidenceState;
 }
 
 export interface ChainSegment {
@@ -1181,6 +1201,8 @@ export interface ChainSegment {
   chokepoint_total: number | null;
   status: string;
   tickers: ChainTicker[];
+  evidence_ids: string[];
+  evidence_state: EvidenceState;
 }
 
 export interface ChainOverview {
@@ -1189,6 +1211,30 @@ export interface ChainOverview {
   prosperity_score: number | null;
   sector_score: number | null;
   core_targets: ChainTicker[];
+  evidence_ids: string[];
+  evidence_state: EvidenceState;
+}
+
+export type EvidenceState = "supported" | "stale" | "conflicting" | "missing";
+
+export interface ChainEvidence {
+  evidence_id: string;
+  claim: string;
+  source_name: string;
+  source_url: string | null;
+  as_of: string;
+  retrieved_at: string;
+  expires_at: string | null;
+  confidence: string;
+  status: "active" | "stale" | "conflicting" | "missing";
+}
+
+export interface ChainConflict {
+  conflict_id: string;
+  subject_id: string;
+  evidence_ids: string[];
+  description: string;
+  status: "open" | "resolved";
 }
 
 export interface Chain {
@@ -1200,11 +1246,20 @@ export interface Chain {
   status: string;
   template_key: string;
   swarm_run_id: string;
+  refresh_job_id: string;
   refresh_schedule: string;
   created_at: string;
   updated_at: string;
+  as_of: string;
+  research_version: number;
+  row_version: number;
+  last_error: string;
   overview: ChainOverview;
   segments: ChainSegment[];
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  evidence: ChainEvidence[];
+  conflicts: ChainConflict[];
 }
 
 export interface ChainSummary {
@@ -1230,14 +1285,35 @@ export interface ChainStatus {
   ingested?: boolean;
   task_count?: number;
   completed_count?: number;
+  error?: string;
 }
 
 export interface ChainSnapshot {
+  snapshot_id: string;
   recorded_at: string;
+  research_version?: number;
+  as_of?: string;
   lifecycle_stage: string;
   prosperity_score: number | null;
   sector_score: number | null;
   segment_scores: Record<string, number>;
+  overview_evidence_state?: EvidenceState;
+  segment_evidence_states?: Record<string, EvidenceState>;
+}
+
+export interface ChainHistoryCompare {
+  chain_id: string;
+  from: ChainSnapshot;
+  to: ChainSnapshot;
+  changes: {
+    prosperity_score: number | null;
+    sector_score: number | null;
+    segment_scores: Record<string, number | null>;
+    evidence_states: {
+      from: Record<string, EvidenceState>;
+      to: Record<string, EvidenceState>;
+    };
+  };
 }
 
 export interface CreateChainRequest {
@@ -1253,6 +1329,7 @@ export interface UpdateChainRequest {
   description?: string;
   market?: string;
   segments?: ChainSegment[];
+  row_version?: number;
 }
 
 export interface SwarmTaskSummary {

@@ -119,9 +119,23 @@ def redact_log_text(value: object) -> str:
 
 class SecretRedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        rendered = record.getMessage()
-        record.msg = redact_log_text(rendered)
-        record.args = ()
+        # Do not flatten records with ``getMessage()``.  Uvicorn's
+        # ``AccessFormatter`` reads its five structured values from
+        # ``record.args`` after filters run; replacing them with an empty tuple
+        # makes otherwise successful requests emit logging tracebacks.
+        record.msg = redact_log_text(record.msg)
+        if isinstance(record.args, dict):
+            record.args = {
+                key: redact_log_text(value) if isinstance(value, str) else value
+                for key, value in record.args.items()
+            }
+        elif isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_log_text(value) if isinstance(value, str) else value
+                for value in record.args
+            )
+        elif isinstance(record.args, str):
+            record.args = redact_log_text(record.args)
         return True
 
 
