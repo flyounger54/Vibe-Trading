@@ -1774,12 +1774,16 @@
               }
             ]
           },
+          "qualification": {
+            "$ref": "#/components/schemas/LiveQualificationState"
+          },
           "runner": {
             "$ref": "#/components/schemas/RunnerLivenessState"
           }
         },
         "required": [
           "auth",
+          "qualification",
           "runner",
           "halted"
         ],
@@ -1820,6 +1824,71 @@
           }
         },
         "title": "LiveHaltRequest",
+        "type": "object"
+      },
+      "LiveQualificationState": {
+        "description": "Node 12A exact-key live pilot qualification snapshot.",
+        "properties": {
+          "account_ref": {
+            "title": "Account Ref",
+            "type": "string"
+          },
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "broker": {
+            "title": "Broker",
+            "type": "string"
+          },
+          "build_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Revision"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "observed_trading_days": {
+            "title": "Observed Trading Days",
+            "type": "integer"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "required_trading_days": {
+            "title": "Required Trading Days",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowed",
+          "code",
+          "reason",
+          "broker",
+          "account_ref",
+          "policy_version",
+          "state",
+          "observed_trading_days",
+          "required_trading_days"
+        ],
+        "title": "LiveQualificationState",
         "type": "object"
       },
       "LiveRunnerControlRequest": {

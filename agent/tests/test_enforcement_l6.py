@@ -29,6 +29,7 @@ from src.live.mandate.model import (
     AssetClass,
     InstrumentType,
 )
+from src.live.qualification import QualificationDecision, QualificationState
 from src.trading.connectors.robinhood.classification import ROBINHOOD_TOOL_CLASS
 from src.tools.mcp import MCPRemoteToolSpec
 
@@ -200,7 +201,24 @@ class _NoBrokerQuoteAdapter:
 
 
 def _guard(adapter):
-    return order_guard.LiveOrderGuardTool(adapter, _spec(), broker="robinhood", session_id="s1")
+    qualification = QualificationDecision(
+        allowed=True,
+        code="qualified",
+        reason="test qualification",
+        broker="robinhood",
+        account_ref="acct_ref",
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state=QualificationState.PILOT_ACTIVE,
+        observed_trading_days=30,
+    )
+    return order_guard.LiveOrderGuardTool(
+        adapter,
+        _spec(),
+        broker="robinhood",
+        session_id="s1",
+        qualification_check=lambda _broker, _account_ref: qualification,
+    )
 
 
 def test_quantity_only_uses_broker_quote_and_enforces_notional(live_runtime: Path) -> None:

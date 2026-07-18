@@ -34,6 +34,7 @@ from src.live.mandate.model import (
     Mandate,
     UniverseConstraint,
 )
+from src.live.qualification import QualificationDecision, QualificationState
 from src.tools.mcp import MCPRemoteToolSpec
 
 
@@ -265,7 +266,22 @@ def test_universe_market_cap_missing_data_fail_closed(monkeypatch: pytest.Monkey
 # --------------------------------------------------------------------------- #
 
 
+def _allowed_qualification(_broker: str, account_ref: str) -> QualificationDecision:
+    return QualificationDecision(
+        allowed=True,
+        code="qualified",
+        reason="test qualification",
+        broker="robinhood",
+        account_ref=account_ref,
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state=QualificationState.PILOT_ACTIVE,
+        observed_trading_days=30,
+    )
+
+
 def _guard(adapter, **kwargs):
+    kwargs.setdefault("qualification_check", _allowed_qualification)
     return order_guard.LiveOrderGuardTool(adapter, _spec(), broker="robinhood", session_id="s1", **kwargs)
 
 
@@ -280,6 +296,31 @@ def test_guard_forwards_in_mandate_order(live_runtime: Path) -> None:
     # Daily counter incremented exactly once on confirmed forward.
     counter = json.loads((live_runtime / "live" / "robinhood" / "trade_counter.json").read_text())
     assert counter["count"] == 1
+
+
+def test_guard_defaults_closed_without_qualification_selection(
+    live_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_mandate(live_runtime, _mandate())
+    monkeypatch.delenv("VIBE_TRADING_LIVE_BROKER", raising=False)
+    adapter = _MockAdapter(positions=[], balance=5000.0)
+    guard = order_guard.LiveOrderGuardTool(
+        adapter, _spec(), broker="robinhood", session_id="s1"
+    )
+
+    out = json.loads(
+        guard.execute(
+            symbol="AAPL",
+            side="buy",
+            instrument_type="equity",
+            notional_usd=100.0,
+        )
+    )
+
+    assert out["status"] == "blocked"
+    assert out["decision"] == "qualification_required"
+    assert out["qualification"]["code"] == "live_broker_not_enabled"
+    assert adapter.order_calls == []
 
 
 def test_guard_blocks_over_notional_with_breach(live_runtime: Path) -> None:

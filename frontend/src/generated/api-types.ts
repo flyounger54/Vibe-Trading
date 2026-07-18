@@ -34,8 +34,9 @@ export type HealthResponse = { "status": string; "service": string; "timestamp":
 export type LLMProviderOption = { "name": string; "label": string; "api_key_env"?: string | null; "base_url_env": string; "default_model": string; "default_base_url": string; "api_key_required"?: boolean; "auth_type"?: string; "login_command"?: string | null };
 export type LLMSettingsResponse = { "provider": string; "model_name": string; "base_url": string; "api_key_env"?: string | null; "api_key_configured": boolean; "api_key_hint"?: string | null; "api_key_required": boolean; "temperature": number; "timeout_seconds": number; "max_retries": number; "reasoning_effort": string; "sse_timeout_seconds": number; "env_path": string; "providers": Array<LLMProviderOption> };
 export type LiveAuthorizeRequest = { "broker": string };
-export type LiveBrokerStatus = { "auth": BrokerAuthState; "mandate"?: ActiveMandateState | null; "runner": RunnerLivenessState; "halted": boolean };
+export type LiveBrokerStatus = { "auth": BrokerAuthState; "mandate"?: ActiveMandateState | null; "qualification": LiveQualificationState; "runner": RunnerLivenessState; "halted": boolean };
 export type LiveHaltRequest = { "broker"?: string | null; "reason"?: string; "session_id"?: string | null };
+export type LiveQualificationState = { "allowed": boolean; "code": string; "reason": string; "broker": string; "account_ref": string; "build_revision"?: string | null; "policy_version": string; "state": string; "observed_trading_days": number; "required_trading_days": number };
 export type LiveRunnerControlRequest = { "broker": string; "session_id"?: string | null };
 export type LiveStatusResponse = { "global_halted": boolean; "brokers": Array<LiveBrokerStatus> };
 export type MandateLimits = { "max_order_notional_usd": number; "max_total_exposure_usd": number; "max_leverage": number; "max_trades_per_day": number; "allowed_instruments": Array<string>; "account_funding_usd": number };
@@ -100,6 +101,7 @@ export interface components {
     "LiveAuthorizeRequest": LiveAuthorizeRequest;
     "LiveBrokerStatus": LiveBrokerStatus;
     "LiveHaltRequest": LiveHaltRequest;
+    "LiveQualificationState": LiveQualificationState;
     "LiveRunnerControlRequest": LiveRunnerControlRequest;
     "LiveStatusResponse": LiveStatusResponse;
     "MandateLimits": MandateLimits;

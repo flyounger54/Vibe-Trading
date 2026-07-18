@@ -15,6 +15,8 @@ broker call:
 5. read positions + balance via the broker's READ MCP tools (plain path).
 6. ``check_mandate`` — ALLOW (forward via ``super().execute``) / DENY
    (structural: universe|instrument) / PAUSE_FOR_REAUTH (quantitative).
+7. exact live qualification — broker + account + build + policy must be in an
+   active, unexpired pilot state before the remote order tool is invoked.
 
 The daily ``trade_counter.json`` is incremented only on a confirmed ALLOW whose
 forwarded broker result is **non-error** (``MCPServerAdapter.call_tool`` returns
@@ -39,7 +41,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from src.live.audit import LiveActionEvent, write_live_action
 from src.live.enforcement import (
@@ -56,6 +58,7 @@ from src.live.halt import halt_flag_set
 from src.live.mandate.model import MANDATE_SCHEMA_VERSION, Mandate
 from src.live.mandate.store import load_mandate
 from src.live.daily_count import increment_daily_count, read_daily_count
+from src.live.qualification import QualificationDecision, evaluate_live_qualification
 from src.tools.mcp import MCPRemoteTool, MCPRemoteToolSpec, MCPServerAdapter
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
         *,
         broker: str | None = None,
         session_id: str = "",
+        qualification_check: Callable[[str, str], QualificationDecision] | None = None,
     ) -> None:
         """Initialize the gate wrapper.
 
@@ -98,10 +102,14 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 spec's ``server_name`` (the channel is keyed by broker, e.g.
                 ``"robinhood"``).
             session_id: Originating session id, stamped onto audit events.
+            qualification_check: Injectable Node 12A qualification evaluator.
+                Production uses the protected registry; tests may supply a
+                deterministic decision without touching operator state.
         """
         super().__init__(adapter, spec)
         self.broker = (broker or spec.server_name or "").strip().lower()
         self.session_id = session_id
+        self._qualification_check = qualification_check or evaluate_live_qualification
 
     @property
     def remote_name(self) -> str:
@@ -177,7 +185,21 @@ class LiveOrderGuardTool(MCPRemoteTool):
         )
 
         if breach is None:
-            return self._allow(mandate=mandate, intent=intent, kwargs=kwargs)
+            qualification = self._qualification_check(
+                self.broker, mandate.consent.account_ref
+            )
+            if not qualification.allowed:
+                return self._deny_qualification(
+                    mandate=mandate,
+                    intent=intent,
+                    qualification=qualification,
+                )
+            return self._allow(
+                mandate=mandate,
+                intent=intent,
+                kwargs=kwargs,
+                qualification=qualification,
+            )
 
         if breach.kind in (BREACH_KIND_UNIVERSE, BREACH_KIND_INSTRUMENT):
             return self._deny_breach(breach, mandate=mandate, intent=intent, reauth=False)
@@ -288,7 +310,14 @@ class LiveOrderGuardTool(MCPRemoteTool):
 
     # -- decision helpers ---------------------------------------------------
 
-    def _allow(self, *, mandate: Mandate, intent: OrderIntent, kwargs: dict) -> str:
+    def _allow(
+        self,
+        *,
+        mandate: Mandate,
+        intent: OrderIntent,
+        kwargs: dict,
+        qualification: QualificationDecision,
+    ) -> str:
         """Forward the order unchanged; consume a count + audit only on success.
 
         ``MCPServerAdapter.call_tool`` does NOT raise on broker/network failure —
@@ -315,6 +344,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
             "max_order_notional_usd", "max_total_exposure_usd",
             "max_leverage", "max_trades_per_day", "account_funding_usd",
             "universe_floors",
+            "live_qualification",
         ]
         if is_error:
             record = self._audit(
@@ -324,7 +354,12 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 intent=intent,
                 broker_request=dict(kwargs),
                 broker_response=broker_response,
-                gate_decision={"allowed": True, "decision": _DECISION_ALLOW, "checked_limits": checked},
+                gate_decision={
+                    "allowed": True,
+                    "decision": _DECISION_ALLOW,
+                    "checked_limits": checked,
+                    "qualification": qualification.to_dict(),
+                },
                 error=self._error_message(broker_response),
             )
         else:
@@ -337,9 +372,46 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 intent=intent,
                 broker_request=dict(kwargs),
                 broker_response=broker_response,
-                gate_decision={"allowed": True, "decision": _DECISION_ALLOW, "checked_limits": checked},
+                gate_decision={
+                    "allowed": True,
+                    "decision": _DECISION_ALLOW,
+                    "checked_limits": checked,
+                    "qualification": qualification.to_dict(),
+                },
             )
         return self._embed_live_action(forwarded, record)
+
+    def _deny_qualification(
+        self,
+        *,
+        mandate: Mandate,
+        intent: OrderIntent,
+        qualification: QualificationDecision,
+    ) -> str:
+        """Audit and deny immediately before the remote order write boundary."""
+        snapshot = qualification.to_dict()
+        record = self._audit(
+            kind="order_rejected",
+            outcome="blocked",
+            mandate=mandate,
+            intent=intent,
+            broker_request=None,
+            broker_response=None,
+            gate_decision={
+                "allowed": False,
+                "decision": "qualification_required",
+                "checked_limits": ["mandate", "risk", "live_qualification"],
+                "qualification": snapshot,
+            },
+            error=qualification.reason,
+        )
+        return self._refusal(
+            decision="qualification_required",
+            reason=qualification.reason,
+            reauth=False,
+            record=record,
+            qualification=snapshot,
+        )
 
     def _deny(
         self,
@@ -412,6 +484,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
         reauth: bool,
         breach: BreachEvent | None = None,
         record: dict | None = None,
+        qualification: dict[str, object] | None = None,
     ) -> str:
         """Build the structured refusal envelope returned to the agent loop."""
         payload: dict[str, Any] = {
@@ -424,6 +497,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
         }
         if record is not None:
             payload[LIVE_ACTION_RESULT_KEY] = record
+        if qualification is not None:
+            payload["qualification"] = qualification
         if breach is not None:
             payload["breach"] = {
                 "broker": breach.broker,
@@ -518,9 +593,9 @@ class LiveOrderGuardTool(MCPRemoteTool):
         consent = mandate.consent if mandate is not None else None
         try:
             event = LiveActionEvent(
-                kind=kind,  # type: ignore[arg-type]
+                kind=kind,
                 session_id=self.session_id,
-                outcome=outcome,  # type: ignore[arg-type]
+                outcome=outcome,
                 server=self.broker,
                 remote_tool=self.remote_name,
                 intent_normalized=_describe_intent(intent),

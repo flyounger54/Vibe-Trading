@@ -15,6 +15,8 @@ any order reaches the broker:
 5. read positions + balance via the connector's own READ functions.
 6. ``check_mandate`` — ALLOW → ``connector.place_order`` / DENY (structural) /
    PAUSE_FOR_REAUTH (quantitative).
+7. exact live qualification — broker + account + build + policy must be in an
+   active, unexpired pilot state before ``connector.place_order`` is invoked.
 
 A daily count is consumed only on a confirmed ALLOW whose ``place_order``
 returned a non-error envelope. Every decision writes one audit event and the
@@ -40,6 +42,7 @@ from src.live.enforcement import (
 from src.live.halt import halt_flag_set
 from src.live.mandate.model import MANDATE_SCHEMA_VERSION, Mandate
 from src.live.mandate.store import load_mandate
+from src.live.qualification import QualificationDecision, evaluate_live_qualification
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +111,21 @@ def execute_live_order(
     )
 
     if breach is None:
-        return _allow(broker, session_id, connector_module, config, intent, place_kwargs, mandate)
+        qualification = evaluate_live_qualification(broker, mandate.consent.account_ref)
+        if not qualification.allowed:
+            return _deny_qualification(
+                broker, session_id, mandate, intent, qualification
+            )
+        return _allow(
+            broker,
+            session_id,
+            connector_module,
+            config,
+            intent,
+            place_kwargs,
+            mandate,
+            qualification,
+        )
 
     reauth = breach.kind not in (BREACH_KIND_UNIVERSE, BREACH_KIND_INSTRUMENT)
     return _deny_breach(broker, session_id, breach, mandate, intent, reauth)
@@ -119,7 +136,16 @@ def execute_live_order(
 # --------------------------------------------------------------------------- #
 
 
-def _allow(broker, session_id, connector_module, config, intent, place_kwargs, mandate) -> dict[str, Any]:
+def _allow(
+    broker,
+    session_id,
+    connector_module,
+    config,
+    intent,
+    place_kwargs,
+    mandate,
+    qualification: QualificationDecision,
+) -> dict[str, Any]:
     """Execute the order; consume a count + audit only on a non-error result."""
     try:
         result = connector_module.place_order(config, **place_kwargs)
@@ -132,12 +158,18 @@ def _allow(broker, session_id, connector_module, config, intent, place_kwargs, m
         "mandate", "expiry", "halt_flag", "exclude_symbols", "allowed_instruments",
         "asset_classes", "max_order_notional_usd", "max_total_exposure_usd",
         "max_leverage", "max_trades_per_day", "account_funding_usd", "universe_floors",
+        "live_qualification",
     ]
     if is_error:
         record = _audit(
             broker, session_id, kind="order_rejected", outcome="error", mandate=mandate, intent=intent,
             broker_request=dict(place_kwargs), broker_response=result if isinstance(result, dict) else {"raw": result},
-            gate_decision={"allowed": True, "decision": _DECISION_ALLOW, "checked_limits": checked},
+            gate_decision={
+                "allowed": True,
+                "decision": _DECISION_ALLOW,
+                "checked_limits": checked,
+                "qualification": qualification.to_dict(),
+            },
             error=_error_message(result),
         )
     else:
@@ -145,7 +177,12 @@ def _allow(broker, session_id, connector_module, config, intent, place_kwargs, m
         record = _audit(
             broker, session_id, kind="order_placed", outcome="accepted", mandate=mandate, intent=intent,
             broker_request=dict(place_kwargs), broker_response=result,
-            gate_decision={"allowed": True, "decision": _DECISION_ALLOW, "checked_limits": checked},
+            gate_decision={
+                "allowed": True,
+                "decision": _DECISION_ALLOW,
+                "checked_limits": checked,
+                "qualification": qualification.to_dict(),
+            },
         )
     if isinstance(result, dict) and record is not None:
         result = {**result, LIVE_ACTION_RESULT_KEY: record}
@@ -161,6 +198,42 @@ def _deny(broker, session_id, reason, checked, mandate, *, intent, reauth=False)
         error=reason,
     )
     return _refusal(broker, decision=_DECISION_DENY, reason=reason, reauth=reauth, record=record)
+
+
+def _deny_qualification(
+    broker: str,
+    session_id: str,
+    mandate: Mandate,
+    intent: OrderIntent,
+    qualification: QualificationDecision,
+) -> dict[str, Any]:
+    """Audit and deny immediately before the connector write boundary."""
+    snapshot = qualification.to_dict()
+    record = _audit(
+        broker,
+        session_id,
+        kind="order_rejected",
+        outcome="blocked",
+        mandate=mandate,
+        intent=intent,
+        broker_request=None,
+        broker_response=None,
+        gate_decision={
+            "allowed": False,
+            "decision": "qualification_required",
+            "checked_limits": ["mandate", "risk", "live_qualification"],
+            "qualification": snapshot,
+        },
+        error=qualification.reason,
+    )
+    return _refusal(
+        broker,
+        decision="qualification_required",
+        reason=qualification.reason,
+        reauth=False,
+        record=record,
+        qualification=snapshot,
+    )
 
 
 def _deny_breach(broker, session_id, breach, mandate, intent, reauth) -> dict[str, Any]:
@@ -181,7 +254,16 @@ def _deny_breach(broker, session_id, breach, mandate, intent, reauth) -> dict[st
     )
 
 
-def _refusal(broker, *, decision, reason, reauth, breach=None, record=None) -> dict[str, Any]:
+def _refusal(
+    broker,
+    *,
+    decision,
+    reason,
+    reauth,
+    breach=None,
+    record=None,
+    qualification=None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "status": "blocked",
         "decision": decision,
@@ -191,6 +273,8 @@ def _refusal(broker, *, decision, reason, reauth, breach=None, record=None) -> d
     }
     if record is not None:
         payload[LIVE_ACTION_RESULT_KEY] = record
+    if qualification is not None:
+        payload["qualification"] = qualification
     if breach is not None:
         payload["breach"] = {
             "broker": breach.broker, "limit": breach.limit, "limit_value": breach.limit_value,
@@ -300,9 +384,9 @@ def _audit(broker, session_id, *, kind, outcome, mandate, intent, broker_request
     consent = mandate.consent if mandate is not None else None
     try:
         event = LiveActionEvent(
-            kind=kind,  # type: ignore[arg-type]
+            kind=kind,
             session_id=session_id,
-            outcome=outcome,  # type: ignore[arg-type]
+            outcome=outcome,
             server=broker,
             remote_tool=_REMOTE_TOOL,
             intent_normalized=_describe_intent(intent),

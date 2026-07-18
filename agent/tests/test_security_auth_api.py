@@ -30,6 +30,21 @@ def _authorized_local_client() -> TestClient:
     )
 
 
+def _qualified_live_state(broker: str) -> api_server.LiveQualificationState:
+    return api_server.LiveQualificationState(
+        allowed=True,
+        code="qualified",
+        reason="security boundary test qualification",
+        broker=broker,
+        account_ref="acct-security-test",
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state="pilot_active",
+        observed_trading_days=30,
+        required_trading_days=30,
+    )
+
+
 @pytest.fixture(autouse=True)
 def clear_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every auth test from dev-mode auth."""
@@ -283,7 +298,11 @@ def test_rebound_host_cannot_start_live_runner(
     """DNS-rebound loopback JSON requests must not reach live-runner control."""
     monkeypatch.setenv("API_AUTH_KEY", "secret")
     monkeypatch.setattr(api_server, "_API_KEY", "secret")
-    monkeypatch.setattr(api_server, "_active_mandate_state", lambda broker: SimpleNamespace(expired=False))
+    monkeypatch.setattr(
+        api_server,
+        "_active_mandate_state",
+        lambda broker: SimpleNamespace(expired=False, account_ref="acct-security-test"),
+    )
 
     reached = {"factory": False}
 
@@ -319,7 +338,16 @@ def test_allowed_loopback_host_can_start_live_runner_with_generated_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Allowed local hosts still require the generated Bearer key."""
-    monkeypatch.setattr(api_server, "_active_mandate_state", lambda broker: SimpleNamespace(expired=False))
+    monkeypatch.setattr(
+        api_server,
+        "_active_mandate_state",
+        lambda broker: SimpleNamespace(expired=False, account_ref="acct-security-test"),
+    )
+    monkeypatch.setattr(
+        api_server,
+        "_qualification_state",
+        lambda broker, mandate: _qualified_live_state(broker),
+    )
 
     reached = {"factory": False}
 

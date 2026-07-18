@@ -2668,6 +2668,10 @@ def cmd_live_status(broker: Optional[str] = None) -> int:
     from src.live.halt import halt_flag_set, read_halt
     from src.live.mandate.model import MANDATE_SCHEMA_VERSION
     from src.live.mandate.store import load_mandate
+    from src.live.qualification import (
+        MIN_PAPER_SOAK_TRADING_DAYS,
+        evaluate_live_qualification,
+    )
 
     key = (broker or _DEFAULT_LIVE_BROKER).strip().lower()
 
@@ -2712,6 +2716,23 @@ def cmd_live_status(broker: Optional[str] = None) -> int:
             ", ".join(i.value for i in caps.allowed_instruments) or "[red]none[/red]",
         )
         table.add_row("  Expires", _format_expiry_countdown(mandate.consent.expires_at))
+
+    account_ref = mandate.consent.account_ref if mandate is not None else ""
+    qualification = evaluate_live_qualification(key, account_ref)
+    if qualification.allowed:
+        table.add_row("Live execution", "[green]qualified pilot active[/green]")
+    else:
+        table.add_row(
+            "Live execution",
+            f"[yellow]disabled[/yellow] ({qualification.code})",
+        )
+    table.add_row("  Qualification", qualification.state.value)
+    table.add_row(
+        "  Paper soak",
+        f"{qualification.observed_trading_days}/{MIN_PAPER_SOAK_TRADING_DAYS} trading days",
+    )
+    if qualification.build_revision:
+        table.add_row("  Build", qualification.build_revision[:12])
 
     console.print(table)
     return EXIT_SUCCESS
@@ -2853,9 +2874,8 @@ def cmd_live_start(broker: Optional[str] = None) -> int:
 
     Relays a start request to the R6 surface endpoint
     (``POST /live/runner/start``); the server owns the durable scheduler + job
-    store. This never touches the agent loop. The runner is read-only until a
-    mandate is committed (the consent flow), so starting it is safe even before
-    any mandate exists.
+    store. This never touches the agent loop directly. The API refuses to start
+    unless the mandate and exact Node 12A live-pilot qualification are active.
 
     Args:
         broker: Broker key, or ``None`` for the default broker (``robinhood``).

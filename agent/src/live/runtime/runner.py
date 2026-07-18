@@ -6,7 +6,8 @@ trades inside the committed mandate, sleeps, and survives restarts. This module
 implements two of the eight §7.5 components:
 
 * **Component 2 — Runner loop.** Per tick, in a fixed fail-closed order:
-  ``halt → proactive expiry → reconciliation → autonomous turn → audit``. The
+  ``halt → proactive expiry → qualification → reconciliation → autonomous turn
+  → audit``. The
   mandate is **pinned inline** into the turn prompt this runner constructs so it
   survives ``loop.py`` 5-layer compaction — done in the runner-owned prompt
   string, never by editing the protected ``src/agent/context.py``.
@@ -44,11 +45,12 @@ from src.live.audit import LiveActionEvent, write_live_action
 from src.live.halt import halt_flag_set, trip_halt
 from src.live.mandate.model import Mandate
 from src.live.mandate.store import load_mandate
+from src.live.qualification import QualificationDecision, evaluate_live_qualification
 from src.live.runtime.flatten import flatten_and_cancel
 from src.live.runtime.jobstore import JobStore
 from src.live.runtime.liveness import write_heartbeat
-from src.live.runtime.scheduler import Job, Scheduler
-from src.live.runtime.triggers import Trigger, due_now
+from src.live.runtime.scheduler import Job
+from src.live.runtime.triggers import Trigger
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,7 @@ logger = logging.getLogger(__name__)
 TICK_HALTED = "halted"
 TICK_NO_MANDATE = "no_mandate"
 TICK_EXPIRED = "expired"
+TICK_UNQUALIFIED = "unqualified"
 TICK_RECONCILE_UNSAFE = "reconcile_unsafe"
 TICK_RECONCILE_ERROR = "reconcile_error"
 TICK_INVOKED = "invoked"
@@ -319,6 +322,7 @@ class LiveRunner:
         triggers: list[Trigger] | None = None,
         market_watch_ms: int = _DEFAULT_MARKET_WATCH_MS,
         session_id: str = "",
+        qualification_check_fn: Callable[[str, str], QualificationDecision] | None = None,
     ) -> None:
         """Initialize the runner.
 
@@ -365,6 +369,9 @@ class LiveRunner:
                 An operational knob (default 60s), NOT a safety limit — non-positive
                 values fall back to the default.
             session_id: Session id passed to the agent caller + audit records.
+            qualification_check_fn: Node 12A exact broker/account/build/policy
+                evaluator. An unqualified tick stops before reconciliation or
+                agent invocation.
         """
         self.broker = broker
         self._agent_caller = agent_caller
@@ -386,6 +393,7 @@ class LiveRunner:
         self._triggers = list(triggers or [])
         self._market_watch_ms = market_watch_ms if market_watch_ms > 0 else _DEFAULT_MARKET_WATCH_MS
         self._session_id = session_id or f"live-{broker}"
+        self._qualification_check = qualification_check_fn or evaluate_live_qualification
         #: Set once the preemptive sweep has fired so a tripped channel never
         #: flattens twice across consecutive ticks (no-retry, SPEC §8.5).
         self._flatten_fired = False
@@ -413,11 +421,14 @@ class LiveRunner:
         2. **Mandate + proactive expiry** — load the mandate; if absent or past
            ``expires_at``, trip a stop + clear authority + audit, and return
            BEFORE any agent invocation. A dead mandate never reaches step 5.
-        3. **Reconcile** — pull broker truth via the injected READ callables; an
+        3. **Qualification** — require an active exact live-pilot record for the
+           mandate account and running build; otherwise abort before any agent
+           invocation.
+        4. **Reconcile** — pull broker truth via the injected READ callables; an
            unsafe/ambiguous report aborts the tick (no auto-resend, §8 finding 5).
-        4. **Pin + invoke** — build the autonomous-turn prompt with the full
+        5. **Pin + invoke** — build the autonomous-turn prompt with the full
            mandate inline and invoke the agent through the public caller.
-        5. **Audit** — record the tick outcome.
+        6. **Audit** — record the tick outcome.
 
         Returns:
             A JSON-serializable tick result (see :meth:`TickResult.to_dict`).
@@ -434,11 +445,40 @@ class LiveRunner:
         if _mandate_is_expired(mandate, now):
             return self._expired_result()
 
+        qualification = self._qualification_check(
+            self.broker, mandate.consent.account_ref
+        )
+        if not qualification.allowed:
+            return self._unqualified_result(qualification)
+
         reconcile_outcome = self._run_reconcile()
         if reconcile_outcome is not None:
             return reconcile_outcome
 
         return await self._invoke_and_audit(mandate, now)
+
+    def _unqualified_result(
+        self, qualification: QualificationDecision
+    ) -> dict[str, Any]:
+        """Abort an autonomous tick when the exact pilot qualification is off."""
+        snapshot = qualification.to_dict()
+        audit_id = self._audit(
+            kind="breach",
+            outcome="blocked",
+            intent="live qualification denied — tick aborted",
+            error=qualification.reason,
+            gate_decision={
+                "allowed": False,
+                "decision": "qualification_required",
+                "qualification": snapshot,
+            },
+        )
+        return TickResult(
+            outcome=TICK_UNQUALIFIED,
+            broker=self.broker,
+            reason=f"{qualification.code}: {qualification.reason}",
+            audit_id=audit_id,
+        ).to_dict()
 
     def _run_reconcile(self) -> dict[str, Any] | None:
         """Reconcile broker truth before trading; abort on unsafe/error.
@@ -642,6 +682,7 @@ class LiveRunner:
         outcome: str,
         intent: str,
         error: str | None = None,
+        gate_decision: Mapping[str, Any] | None = None,
     ) -> str | None:
         """Write one live-action audit record for a tick outcome.
 
@@ -653,16 +694,18 @@ class LiveRunner:
             outcome: The :class:`~src.live.audit.LiveActionOutcome`.
             intent: Normalized human-readable intent string.
             error: Optional error description.
+            gate_decision: Optional structured safety-gate snapshot.
 
         Returns:
             The written record's ``audit_id``, or ``None`` if the write failed.
         """
         event = LiveActionEvent(
-            kind=kind,  # type: ignore[arg-type]
+            kind=kind,
             session_id=self._session_id,
-            outcome=outcome,  # type: ignore[arg-type]
+            outcome=outcome,
             server=self.broker,
             intent_normalized=intent,
+            gate_decision=dict(gate_decision) if gate_decision is not None else None,
             error=error,
         )
         try:

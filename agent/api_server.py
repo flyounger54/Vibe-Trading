@@ -415,6 +415,21 @@ class ActiveMandateState(BaseModel):
     limits: MandateLimits
 
 
+class LiveQualificationState(BaseModel):
+    """Node 12A exact-key live pilot qualification snapshot."""
+
+    allowed: bool
+    code: str
+    reason: str
+    broker: str
+    account_ref: str
+    build_revision: Optional[str] = None
+    policy_version: str
+    state: str
+    observed_trading_days: int
+    required_trading_days: int
+
+
 class RunnerLivenessState(BaseModel):
     """Runner liveness snapshot via the §7.5 liveness contract."""
 
@@ -429,6 +444,7 @@ class LiveBrokerStatus(BaseModel):
 
     auth: BrokerAuthState
     mandate: Optional[ActiveMandateState] = None
+    qualification: LiveQualificationState
     runner: RunnerLivenessState
     halted: bool = Field(..., description="Per-broker OR global kill switch is tripped")
 
@@ -2957,10 +2973,24 @@ async def resume_live_endpoint(payload: LiveHaltRequest):
 
 
 def _known_live_brokers() -> List[str]:
-    """Return the recognized live-broker keys (SPEC §7.2)."""
+    """Return every broker with a live profile, including direct SDK paths."""
+    from src.config.schema import LIVE_BROKER_SERVER_KEYS
+    from src.trading.profiles import list_profiles
+
+    brokers = set(LIVE_BROKER_SERVER_KEYS)
+    brokers.update(
+        profile.connector
+        for profile in list_profiles()
+        if profile.environment == "live"
+    )
+    return sorted(brokers)
+
+
+def _oauth_live_brokers() -> set[str]:
+    """Return remote MCP live brokers that support the OAuth on-ramp."""
     from src.config.schema import LIVE_BROKER_SERVER_KEYS
 
-    return sorted(LIVE_BROKER_SERVER_KEYS)
+    return set(LIVE_BROKER_SERVER_KEYS)
 
 
 def _oauth_token_present(broker: str) -> bool:
@@ -3052,6 +3082,17 @@ def _runner_liveness_state(broker: str) -> RunnerLivenessState:
     return RunnerLivenessState(broker=broker, alive=alive, last_tick=tick, last_tick_age_seconds=age)
 
 
+def _qualification_state(
+    broker: str, mandate: Optional[ActiveMandateState]
+) -> LiveQualificationState:
+    """Return the fail-closed Node 12A qualification decision for status/control."""
+    from src.live.qualification import evaluate_live_qualification
+
+    account_ref = mandate.account_ref if mandate is not None else ""
+    decision = evaluate_live_qualification(broker, account_ref)
+    return LiveQualificationState.model_validate(decision.to_dict())
+
+
 async def live_status_endpoint(broker: Optional[str] = Query(None, max_length=64)):
     """Return live-channel status: auth, active mandate, runner liveness, halt (C2).
 
@@ -3076,6 +3117,7 @@ async def live_status_endpoint(broker: Optional[str] = Query(None, max_length=64
     known = set(_known_live_brokers())
     statuses: List[LiveBrokerStatus] = []
     for key in brokers:
+        mandate = _active_mandate_state(key)
         statuses.append(
             LiveBrokerStatus(
                 auth=BrokerAuthState(
@@ -3083,7 +3125,8 @@ async def live_status_endpoint(broker: Optional[str] = Query(None, max_length=64
                     oauth_token_present=_oauth_token_present(key),
                     is_live_broker=key in known,
                 ),
-                mandate=_active_mandate_state(key),
+                mandate=mandate,
+                qualification=_qualification_state(key, mandate),
                 runner=_runner_liveness_state(key),
                 halted=halt_flag_set(broker=key),
             )
@@ -3103,8 +3146,11 @@ async def live_authorize_endpoint(payload: LiveAuthorizeRequest):
     broker = payload.broker.strip().lower()
     if not broker:
         raise HTTPException(status_code=400, detail="broker must not be blank")
-    if broker not in set(_known_live_brokers()):
-        raise HTTPException(status_code=400, detail=f"unknown live broker: {broker}")
+    if broker not in _oauth_live_brokers():
+        raise HTTPException(
+            status_code=400,
+            detail=f"OAuth live authorization is not supported for broker: {broker}",
+        )
 
     from src.trading.service import connector_profile_id_for_broker
 
@@ -3328,6 +3374,16 @@ async def start_runner_endpoint(payload: LiveRunnerControlRequest):
         raise HTTPException(status_code=409, detail=f"mandate for {broker} has expired; re-authorize first")
     if halt_flag_set(broker=broker) or halt_flag_set(broker=None):
         raise HTTPException(status_code=409, detail="kill switch is tripped; resume before starting the runner")
+
+    qualification = _qualification_state(broker, mandate)
+    if not qualification.allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"live qualification denied ({qualification.code}): "
+                f"{qualification.reason}"
+            ),
+        )
 
     try:
         runner = _build_live_runner(broker)

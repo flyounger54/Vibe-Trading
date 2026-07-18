@@ -52,6 +52,23 @@ def _valid_mandate_state(broker: str = "robinhood") -> api_server.ActiveMandateS
     )
 
 
+def _valid_qualification_state(
+    broker: str = "robinhood",
+) -> api_server.LiveQualificationState:
+    return api_server.LiveQualificationState(
+        allowed=True,
+        code="qualified",
+        reason="test qualification",
+        broker=broker,
+        account_ref="acct_test",
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state="pilot_active",
+        observed_trading_days=30,
+        required_trading_days=30,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # C2 — GET /live/status
 # --------------------------------------------------------------------------- #
@@ -67,11 +84,14 @@ def test_live_status_dormant_by_default(tmp_path: Path, monkeypatch) -> None:
     assert body["global_halted"] is False
     brokers = {b["auth"]["broker"]: b for b in body["brokers"]}
     assert "robinhood" in brokers
+    assert "alpaca" in brokers  # direct-SDK live paths are also qualification-visible
     rh = brokers["robinhood"]
     # Channel is OFF until OAuth + mandate: no token, no mandate, runner dead.
     assert rh["auth"]["oauth_token_present"] is False
     assert rh["auth"]["is_live_broker"] is True
     assert rh["mandate"] is None
+    assert rh["qualification"]["allowed"] is False
+    assert rh["qualification"]["code"] == "live_broker_not_enabled"
     assert rh["runner"]["alive"] is False
     assert rh["halted"] is False
 
@@ -136,6 +156,17 @@ def test_authorize_unknown_broker_rejected(tmp_path: Path, monkeypatch) -> None:
     assert response.status_code == 400
 
 
+def test_authorize_direct_sdk_broker_does_not_claim_oauth_support(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post("/live/authorize", json={"broker": "alpaca"})
+
+    assert response.status_code == 400
+    assert "oauth" in response.json()["detail"].lower()
+
+
 # --------------------------------------------------------------------------- #
 # Runner control — POST /live/runner/start|stop
 # --------------------------------------------------------------------------- #
@@ -178,10 +209,30 @@ def test_runner_start_blocked_by_kill_switch(tmp_path: Path, monkeypatch) -> Non
     assert "kill switch" in response.json()["detail"].lower()
 
 
+def test_runner_start_defaults_closed_without_live_qualification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        api_server, "_active_mandate_state", lambda broker: _valid_mandate_state(broker)
+    )
+
+    response = client.post("/live/runner/start", json={"broker": "robinhood"})
+
+    assert response.status_code == 409
+    assert "qualification" in response.json()["detail"].lower()
+    assert "live_broker_not_enabled" in response.json()["detail"]
+
+
 def test_runner_start_success_then_idempotent(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
     monkeypatch.setattr(
         api_server, "_active_mandate_state", lambda broker: _valid_mandate_state(broker)
+    )
+    monkeypatch.setattr(
+        api_server,
+        "_qualification_state",
+        lambda broker, mandate: _valid_qualification_state(broker),
     )
     monkeypatch.setattr(api_server, "_runner_factory", lambda broker: SimpleNamespace(broker=broker))
 
@@ -363,6 +414,11 @@ def test_runner_start_returns_503_when_broker_unavailable(tmp_path, monkeypatch)
     client = _client(tmp_path, monkeypatch)
     monkeypatch.setattr(
         api_server, "_active_mandate_state", lambda broker: _valid_mandate_state(broker)
+    )
+    monkeypatch.setattr(
+        api_server,
+        "_qualification_state",
+        lambda broker, mandate: _valid_qualification_state(broker),
     )
 
     def _boom(broker):

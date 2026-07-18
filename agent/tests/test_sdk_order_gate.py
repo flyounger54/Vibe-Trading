@@ -19,6 +19,7 @@ from src.live.mandate.model import (
     Mandate,
     UniverseConstraint,
 )
+from src.live.qualification import QualificationDecision, QualificationState
 from src.trading import service
 
 pytestmark = pytest.mark.unit
@@ -74,12 +75,31 @@ def _mandate(*, max_order=1_000_000.0, assets=(AssetClass.US_EQUITY,), instrumen
     )
 
 
-def _patch_gate(monkeypatch, *, mandate, halted=False):
+def _qualification(*, allowed: bool = True) -> QualificationDecision:
+    return QualificationDecision(
+        allowed=allowed,
+        code="qualified" if allowed else "live_broker_not_enabled",
+        reason="test qualification" if allowed else "live execution is disabled",
+        broker="alpaca",
+        account_ref="acct-1",
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state=QualificationState.PILOT_ACTIVE if allowed else QualificationState.DISABLED,
+        observed_trading_days=30 if allowed else 0,
+    )
+
+
+def _patch_gate(monkeypatch, *, mandate, halted=False, qualified=True):
     monkeypatch.setattr(gate, "load_mandate", lambda broker: mandate)
     monkeypatch.setattr(gate, "halt_flag_set", lambda broker: halted)
     monkeypatch.setattr(gate, "write_live_action", lambda *a, **k: {"audited": True})
     monkeypatch.setattr(gate, "read_daily_count", lambda broker: 0)
     monkeypatch.setattr(gate, "increment_daily_count", lambda broker: 1)
+    monkeypatch.setattr(
+        gate,
+        "evaluate_live_qualification",
+        lambda broker, account_ref: _qualification(allowed=qualified),
+    )
 
 
 def _intent(notional=500.0, qty=None, asset=AssetClass.US_EQUITY):
@@ -128,6 +148,24 @@ def test_gate_allows_in_bounds_and_places(monkeypatch) -> None:
     assert out["status"] == "ok" and out["order_id"] == "OID-1"
     assert len(conn.placed) == 1  # forwarded to broker
     assert "live_action" in out
+
+
+def test_gate_blocks_at_write_boundary_without_live_qualification(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate(), qualified=False)
+    conn = _FakeConnector()
+
+    out = gate.execute_live_order(
+        broker="alpaca",
+        connector_module=conn,
+        config=object(),
+        intent=_intent(notional=500.0),
+        place_kwargs={"symbol": "AAPL", "side": "buy", "notional": 500.0},
+    )
+
+    assert out["status"] == "blocked"
+    assert out["decision"] == "qualification_required"
+    assert out["qualification"]["allowed"] is False
+    assert conn.placed == []
 
 
 def test_gate_blocks_oversized_order(monkeypatch) -> None:
@@ -251,6 +289,11 @@ def test_gate_count_consumed_only_on_success(monkeypatch) -> None:
     monkeypatch.setattr(gate, "write_live_action", lambda *a, **k: {"audited": True})
     monkeypatch.setattr(gate, "read_daily_count", lambda b: 0)
     monkeypatch.setattr(gate, "increment_daily_count", lambda b: increments.append(b))
+    monkeypatch.setattr(
+        gate,
+        "evaluate_live_qualification",
+        lambda broker, account_ref: _qualification(allowed=True),
+    )
 
     # Connector returns an error envelope → no count consumed.
     class _ErrConn(_FakeConnector):

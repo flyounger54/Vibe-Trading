@@ -39,11 +39,13 @@ from src.live.runtime.runner import (
     TICK_NO_MANDATE,
     TICK_RECONCILE_ERROR,
     TICK_RECONCILE_UNSAFE,
+    TICK_UNQUALIFIED,
     _mandate_is_expired,
     _parse_expiry,
     _pin_mandate_prompt,
     _report_is_unsafe,
 )
+from src.live.qualification import QualificationDecision, QualificationState
 
 BROKER = "robinhood"
 _FIXED_NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -142,6 +144,20 @@ def _read_stub() -> list:
     return []
 
 
+def _allowed_qualification(_broker: str, account_ref: str) -> QualificationDecision:
+    return QualificationDecision(
+        allowed=True,
+        code="qualified",
+        reason="test qualification",
+        broker=BROKER,
+        account_ref=account_ref,
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state=QualificationState.PILOT_ACTIVE,
+        observed_trading_days=30,
+    )
+
+
 def _build_runner(tracker: _OrderTracker, **overrides) -> LiveRunner:
     """Build a runner wired entirely to the tracker stubs, with overrides."""
     kwargs: dict[str, Any] = dict(
@@ -155,6 +171,7 @@ def _build_runner(tracker: _OrderTracker, **overrides) -> LiveRunner:
         write_audit_fn=tracker.write_audit,
         halt_flag_fn=tracker.halt_flag,
         trip_halt_fn=tracker.trip_halt,
+        qualification_check_fn=_allowed_qualification,
         session_id="live-test",
     )
     kwargs.update(overrides)
@@ -189,6 +206,31 @@ def test_mandate_expired_failclosed_on_bad_expiry() -> None:
 def test_mandate_not_expired_in_future() -> None:
     mandate = _make_mandate(expires_at=_future_expiry())
     assert _mandate_is_expired(mandate, _FIXED_NOW) is False
+
+
+def test_unqualified_tick_stops_before_reconcile_and_agent() -> None:
+    tracker = _OrderTracker()
+    denied = QualificationDecision(
+        allowed=False,
+        code="qualification_state_not_active",
+        reason="qualification state revoked does not permit live execution",
+        broker=BROKER,
+        account_ref="acct-xyz",
+        build_revision="e9f54e0ef19054a690690bdb3c12fa2154b20ebb",
+        policy_version="node12a-live-qualification-v1",
+        state=QualificationState.REVOKED,
+    )
+    runner = _build_runner(
+        tracker,
+        qualification_check_fn=lambda _broker, _account_ref: denied,
+    )
+
+    result = asyncio.run(runner.run_once())
+
+    assert result["outcome"] == TICK_UNQUALIFIED
+    assert "qualification_state_not_active" in result["reason"]
+    assert "reconcile" not in tracker.calls
+    assert "invoke" not in tracker.calls
 
 
 def test_report_is_unsafe_defensive() -> None:
@@ -543,7 +585,7 @@ def test_real_audit_write_on_halt(monkeypatch, tmp_path) -> None:
     # Isolate the runtime root so the real ledger lands under tmp.
     monkeypatch.setattr("src.config.paths.Path.home", lambda: tmp_path)
     from src.live.audit import audit_ledger_path, write_live_action
-    from src.live.halt import halt_flag_set, trip_halt
+    from src.live.halt import trip_halt
 
     tracker = _OrderTracker()
     runner = LiveRunner(
