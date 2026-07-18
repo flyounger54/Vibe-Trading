@@ -2584,6 +2584,11 @@
             ],
             "title": "Benchmark"
           },
+          "calibrate_proba": {
+            "default": true,
+            "title": "Calibrate Proba",
+            "type": "boolean"
+          },
           "cost_bps": {
             "default": 0,
             "title": "Cost Bps",
@@ -2646,6 +2651,16 @@
           "period": {
             "title": "Period",
             "type": "string"
+          },
+          "pit_universe": {
+            "default": true,
+            "title": "Pit Universe",
+            "type": "boolean"
+          },
+          "random_seed": {
+            "default": 42,
+            "title": "Random Seed",
+            "type": "integer"
           },
           "universe": {
             "default": "csi300",
@@ -5121,6 +5136,51 @@
           }
         ],
         "summary": "V1 Start Train Api",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/ml/train/{job_id}/cancel": {
+      "post": {
+        "operationId": "v1_cancel_train_api_api_v1_ml_train__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "V1 Cancel Train Api",
         "tags": [
           "v1"
         ]
@@ -8261,6 +8321,48 @@
           }
         ],
         "summary": "Start Train Api"
+      }
+    },
+    "/ml/train/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_train_api_ml_train__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel Train Api"
       }
     },
     "/ml/train/{job_id}/stream": {

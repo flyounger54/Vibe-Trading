@@ -21,21 +21,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 import traceback
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from src.ml.jobs import TrainingJobStore
 from src.security.boundaries import resolve_within_root, validate_identifier
 
 logger = logging.getLogger(__name__)
 
-ML_TRAIN_JOBS: dict[str, dict[str, Any]] = {}
-_JOBS_LOCK = threading.Lock()
+# Durable storage survives API restarts. The old in-memory dictionary lost
+# both audit history and cancellation requests on every restart.
+_TRAIN_JOB_STORE = TrainingJobStore()
 _RUNNING_TASKS: set[asyncio.Task[Any]] = set()
 MAX_CONCURRENT_TRAINS = 2
 
@@ -59,6 +59,9 @@ class TrainRequest(BaseModel):
     cost_bps: float = 0
     n_splits: int = 5
     model_id: str | None = None
+    pit_universe: bool = True
+    calibrate_proba: bool = True
+    random_seed: int = 42
 
 
 class SelectFeaturesRequest(BaseModel):
@@ -163,38 +166,42 @@ def register_ml_routes(
     # -------------------------------------------------------------------
     @app.post("/ml/train", dependencies=[Depends(require_auth)])
     async def start_train_api(req: TrainRequest):
-        running = sum(1 for j in ML_TRAIN_JOBS.values() if j.get("status") == "running")
+        running = sum(
+            1 for job in _TRAIN_JOB_STORE.list() if job.get("status") in {"running", "cancelling"}
+        )
         if running >= MAX_CONCURRENT_TRAINS:
             raise HTTPException(429, f"Max {MAX_CONCURRENT_TRAINS} concurrent training jobs")
 
         job_id = uuid.uuid4().hex[:12]
-        with _JOBS_LOCK:
-            ML_TRAIN_JOBS[job_id] = {
-                "status": "running",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "events": [],
-                "result": None,
-                "error": None,
-                "request": req.model_dump(),
-            }
+        _TRAIN_JOB_STORE.create(job_id, req.model_dump())
 
         async def _run():
             try:
                 result = await asyncio.to_thread(_train_sync, job_id, req)
-                with _JOBS_LOCK:
-                    ML_TRAIN_JOBS[job_id]["status"] = "done"
-                    ML_TRAIN_JOBS[job_id]["result"] = result
+                _TRAIN_JOB_STORE.finish(job_id, result)
             except Exception as exc:
                 logger.error("Training job %s failed: %s\n%s", job_id, exc, traceback.format_exc())
-                with _JOBS_LOCK:
-                    ML_TRAIN_JOBS[job_id]["status"] = "error"
-                    ML_TRAIN_JOBS[job_id]["error"] = str(exc)
+                _TRAIN_JOB_STORE.fail(job_id, str(exc))
 
         task = asyncio.create_task(_run())
         _RUNNING_TASKS.add(task)
         task.add_done_callback(_RUNNING_TASKS.discard)
 
         return {"status": "ok", "job_id": job_id}
+
+    # -------------------------------------------------------------------
+    # POST /ml/train/{job_id}/cancel — cooperative cancellation
+    # -------------------------------------------------------------------
+    @app.post("/ml/train/{job_id}/cancel", dependencies=[Depends(require_auth)])
+    async def cancel_train_api(job_id: str):
+        try:
+            validate_identifier(job_id, "job_id")
+            job = _TRAIN_JOB_STORE.request_cancel(job_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"status": "ok", "job_id": job_id, "job_status": job["status"]}
 
     # -------------------------------------------------------------------
     # GET /ml/train/{job_id}/stream — SSE
@@ -205,20 +212,19 @@ def register_ml_routes(
             validate_identifier(job_id, "job_id")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if job_id not in ML_TRAIN_JOBS:
+        if _TRAIN_JOB_STORE.get(job_id) is None:
             raise HTTPException(404, f"Job {job_id} not found")
 
         async def event_gen():
             sent = 0
             while True:
-                with _JOBS_LOCK:
-                    job = ML_TRAIN_JOBS.get(job_id)
-                    if not job:
-                        break
-                    events = job["events"][sent:]
-                    status = job["status"]
-                    result = job.get("result")
-                    error = job.get("error")
+                job = _TRAIN_JOB_STORE.get(job_id)
+                if not job:
+                    break
+                events = job["events"][sent:]
+                status = job["status"]
+                result = job.get("result")
+                error = job.get("error")
 
                 for ev in events:
                     yield f"event: progress\ndata: {json.dumps(ev, default=str)}\n\n"
@@ -228,7 +234,7 @@ def register_ml_routes(
                     yield f"event: result\ndata: {json.dumps(result, default=str)}\n\n"
                     yield "event: done\ndata: {}\n\n"
                     break
-                elif status == "error":
+                elif status in {"error", "cancelled", "interrupted"}:
                     yield f"event: error\ndata: {json.dumps({'error': error})}\n\n"
                     break
 
@@ -354,11 +360,10 @@ def _train_sync(job_id: str, req: TrainRequest) -> dict[str, Any]:
     from src.ml.base_model import LabelConfig, TrainConfig
     from src.ml.pipeline import run_training_pipeline
 
-    def emit(stage: str, **kwargs: Any) -> None:
-        with _JOBS_LOCK:
-            job = ML_TRAIN_JOBS.get(job_id)
-            if job:
-                job["events"].append({"stage": stage, **kwargs})
+    def emit(stage: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        event = dict(payload or {})
+        event.update(kwargs)
+        _TRAIN_JOB_STORE.append_event(job_id, stage, **event)
 
     emit("init", model_type=req.model_type, universe=req.universe)
 
@@ -379,10 +384,17 @@ def _train_sync(job_id: str, req: TrainRequest) -> dict[str, Any]:
         model_type=req.model_type,
         model_params=req.model_params,
         model_id=req.model_id,
+        pit_universe=req.pit_universe,
+        calibrate_proba=req.calibrate_proba,
+        random_seed=req.random_seed,
     )
 
-    emit("training", message="Starting pipeline...")
-    result = run_training_pipeline(config)
+    emit("training", message="Starting leakage-safe pipeline")
+    result = run_training_pipeline(
+        config,
+        progress_callback=emit,
+        should_cancel=lambda: _TRAIN_JOB_STORE.is_cancel_requested(job_id),
+    )
     emit("complete", model_id=result.model_id)
 
     return {
@@ -392,6 +404,8 @@ def _train_sync(job_id: str, req: TrainRequest) -> dict[str, Any]:
         "n_train_samples": result.n_train_samples,
         "cv_summary": result.cv_summary,
         "overfit_warning": result.overfit_warning,
+        "research_only": result.research_only,
+        "production_eligible": result.production_eligible,
         "top_features": dict(list(result.feature_importance.items())[:10]),
         "wall_seconds": result.wall_seconds,
     }

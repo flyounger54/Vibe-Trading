@@ -109,6 +109,8 @@ class TrainConfig:
     use_cache: bool = True
     pit_universe: bool = True
     calibrate_proba: bool = True
+    random_seed: int = 42
+    min_train_samples: int = 20
 
 
 @dataclass(frozen=True)
@@ -128,3 +130,5 @@ class TrainResult:
     anti_leakage_audit: dict[str, Any]
     overfit_warning: bool
     wall_seconds: float
+    research_only: bool
+    production_eligible: bool

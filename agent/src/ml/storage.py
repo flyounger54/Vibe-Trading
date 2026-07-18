@@ -20,6 +20,7 @@ def save_model(
     model_id: str,
     metadata: dict[str, Any],
     models_dir: Path | None = None,
+    model_manifest: Any | None = None,
 ) -> tuple[Path, Path]:
     """Save model artifacts + metadata.json. Returns (model_path, meta_path)."""
     base = models_dir or _MODELS_DIR
@@ -30,6 +31,25 @@ def save_model(
     meta_path = model_dir / "metadata.json"
     metadata["model_id"] = model_id
     metadata["saved_at"] = datetime.now(timezone.utc).isoformat()
+
+    if model_manifest is not None:
+        if hasattr(model_manifest, "model_id"):
+            manifest_model_id = model_manifest.model_id
+        elif isinstance(model_manifest, dict):
+            manifest_model_id = model_manifest.get("model_id")
+        else:
+            raise TypeError("model_manifest must be a ModelManifest or dict")
+        if manifest_model_id != model_id:
+            raise ValueError("Model manifest model_id does not match saved model_id")
+        if hasattr(model_manifest, "save"):
+            manifest_path = model_manifest.save(model_dir)
+        else:
+            manifest_path = model_dir / "model_manifest.json"
+            manifest_path.write_text(
+                json.dumps(model_manifest, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+        metadata["model_manifest_path"] = str(manifest_path)
 
     meta_path.write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False, default=str),
@@ -94,6 +114,8 @@ def list_models(
                 "ic_mean": cv_summary.get("ic_mean"),
                 "auc_mean": cv_summary.get("auc_mean"),
                 "overfit_warning": meta.get("overfit_warning", False),
+                "research_only": meta.get("research_only", True),
+                "production_eligible": meta.get("production_eligible", False),
                 "created_at": meta.get("created_at", ""),
                 "feature_profile_id": meta.get("feature_profile_id", ""),
             })

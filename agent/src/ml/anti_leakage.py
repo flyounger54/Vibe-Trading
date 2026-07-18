@@ -57,6 +57,32 @@ def audit_train_test_leakage(
     }
 
 
+def audit_label_leakage(
+    train_dates: np.ndarray,
+    evaluation_dates: np.ndarray,
+    label_horizon: int,
+) -> dict[str, Any]:
+    """Verify that forward labels fitted on train rows end before evaluation.
+
+    This is reported independently from generic split separation so an audit
+    clearly identifies a label-horizon violation rather than burying it in a
+    broad train/test error.
+    """
+    if len(train_dates) == 0 or len(evaluation_dates) == 0:
+        return {"check": "label_leakage", "passed": True, "reason": "empty split"}
+    train_max = pd.Timestamp(train_dates.max())
+    evaluation_min = pd.Timestamp(evaluation_dates.min())
+    observed_gap = (evaluation_min - train_max).days
+    return {
+        "check": "label_leakage",
+        "passed": observed_gap >= label_horizon,
+        "train_label_end": str((train_max + pd.Timedelta(days=label_horizon)).date()),
+        "evaluation_start": str(evaluation_min.date()),
+        "label_horizon_days": label_horizon,
+        "observed_gap_days": observed_gap,
+    }
+
+
 def audit_selection_leakage(
     selection_dates: np.ndarray,
     test_dates: np.ndarray,
@@ -94,6 +120,34 @@ def audit_preprocessing_leakage(
         "passed": len(leaked) == 0,
         "leaked_dates_count": len(leaked),
         "leaked_dates_sample": [str(d.date()) for d in sorted(leaked)[:5]],
+    }
+
+
+def audit_calibration_leakage(
+    train_dates: np.ndarray,
+    calibration_dates: np.ndarray,
+    test_dates: np.ndarray,
+) -> dict[str, Any]:
+    """Ensure train, calibration and real OOS partitions never overlap."""
+    if len(calibration_dates) == 0:
+        return {"check": "calibration_leakage", "passed": True, "reason": "calibration disabled"}
+    train_set = set(pd.DatetimeIndex(train_dates))
+    calibration_set = set(pd.DatetimeIndex(calibration_dates))
+    test_set = set(pd.DatetimeIndex(test_dates))
+    overlaps = {
+        "train_calibration": len(train_set & calibration_set),
+        "train_test": len(train_set & test_set),
+        "calibration_test": len(calibration_set & test_set),
+    }
+    temporal_order = (
+        (not train_set or max(train_set) < min(calibration_set))
+        and (not test_set or max(calibration_set) < min(test_set))
+    )
+    return {
+        "check": "calibration_leakage",
+        "passed": not any(overlaps.values()) and temporal_order,
+        "overlap_counts": overlaps,
+        "temporal_order": temporal_order,
     }
 
 
@@ -170,6 +224,7 @@ def run_full_audit(
     gap_days: int = 0,
     selection_dates: np.ndarray | None = None,
     preprocess_fit_dates: np.ndarray | None = None,
+    calibration_dates: np.ndarray | None = None,
     cache_manifest_path: Path | None = None,
     universe: str | None = None,
     panel: dict[str, pd.DataFrame] | None = None,
@@ -183,12 +238,16 @@ def run_full_audit(
 
     if train_dates is not None and test_dates is not None:
         checks.append(audit_train_test_leakage(train_dates, test_dates, label_horizon, gap_days))
+        checks.append(audit_label_leakage(train_dates, test_dates, label_horizon))
 
     if selection_dates is not None and test_dates is not None:
         checks.append(audit_selection_leakage(selection_dates, test_dates))
 
     if preprocess_fit_dates is not None and test_dates is not None:
         checks.append(audit_preprocessing_leakage(preprocess_fit_dates, test_dates))
+
+    if train_dates is not None and calibration_dates is not None and test_dates is not None:
+        checks.append(audit_calibration_leakage(train_dates, calibration_dates, test_dates))
 
     if cache_manifest_path is not None:
         checks.append(audit_cache_integrity(cache_manifest_path))

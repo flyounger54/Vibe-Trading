@@ -187,6 +187,8 @@ class TrainModelTool(BaseTool):
                 "n_train_samples": result.n_train_samples,
                 "cv_summary": result.cv_summary,
                 "overfit_warning": result.overfit_warning,
+                "research_only": result.research_only,
+                "production_eligible": result.production_eligible,
                 "top_features": dict(list(result.feature_importance.items())[:10]),
                 "anti_leakage": "PASSED" if result.anti_leakage_audit.get("passed") else "FAILED",
                 "next_step": (

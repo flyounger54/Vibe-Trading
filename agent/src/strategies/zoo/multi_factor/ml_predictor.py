@@ -197,8 +197,7 @@ def _predict_with_model(
     factor_ids: list[str],
 ) -> dict[str, pd.Series] | None:
     """Compute features and run model prediction, return wide predictions."""
-    from src.ml.base_model import PreprocessConfig
-    from src.ml.features import build_feature_matrix, preprocess_features
+    from src.ml.features import Preprocessor, build_feature_matrix
 
     try:
         features = build_feature_matrix(panel, factor_ids=factor_ids)
@@ -208,13 +207,15 @@ def _predict_with_model(
     if features.empty:
         return None
 
-    pp_raw = metadata.get("preprocess_config", {})
-    pp_config = PreprocessConfig(
-        winsorize=pp_raw.get("winsorize", True),
-        zscore=pp_raw.get("zscore", True),
-        fillna_strategy=pp_raw.get("fillna_strategy", "median"),
-    )
-    features, _ = preprocess_features(features, pp_config)
+    pp_manifest = metadata.get("preprocessing")
+    if not isinstance(pp_manifest, dict):
+        logger.error("Model metadata lacks a fitted preprocessing manifest; refusing unsafe inference")
+        return None
+    try:
+        features = Preprocessor.from_manifest(pp_manifest).transform(features)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        logger.error("Stored preprocessing manifest is invalid: %s", exc)
+        return None
 
     X = features.values
     preds = model.predict(X)

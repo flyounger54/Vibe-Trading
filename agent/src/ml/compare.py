@@ -95,11 +95,13 @@ def compare_backtest(
             runner = Runner(timeout=600)
             result = runner.execute(entry_script, run_dir, cwd=agent_root, cli_args=[str(run_dir)])
 
-            metrics_path = run_dir / "metrics.json"
-            if metrics_path.exists():
-                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if not result.success:
+                metrics = {
+                    "error": result.stderr[-500:] if result.stderr else "backtest runner failed",
+                    "exit_code": result.exit_code,
+                }
             else:
-                metrics = {"error": result.stderr[-500:] if result.stderr else "no metrics"}
+                metrics = _read_backtest_metrics(run_dir)
 
             results.append({"model": label, **metrics})
         except Exception as exc:
@@ -109,6 +111,26 @@ def compare_backtest(
         return pd.DataFrame()
 
     return pd.DataFrame(results).set_index("model")
+
+
+def _read_backtest_metrics(run_dir: Path) -> dict[str, Any]:
+    """Read the canonical runner artifact, not an obsolete top-level JSON path."""
+    metrics_path = run_dir / "artifacts" / "metrics.csv"
+    if not metrics_path.exists():
+        return {"error": f"missing required backtest artifact: {metrics_path}"}
+    try:
+        frame = pd.read_csv(metrics_path)
+        if frame.empty:
+            return {"error": "backtest metrics artifact is empty"}
+        raw = frame.iloc[0].dropna().to_dict()
+        metrics: dict[str, Any] = {}
+        for key, value in raw.items():
+            if isinstance(value, np.generic):
+                value = value.item()
+            metrics[str(key)] = value
+        return metrics
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        return {"error": f"invalid backtest metrics artifact: {exc}"}
 
 
 def compare_versions(

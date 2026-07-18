@@ -90,6 +90,8 @@ def run_scheduled_retrain(
         use_cache=config.use_cache,
         pit_universe=config.pit_universe,
         calibrate_proba=config.calibrate_proba,
+        random_seed=config.random_seed,
+        min_train_samples=config.min_train_samples,
     )
 
     result = run_training_pipeline(new_config)
@@ -192,6 +194,7 @@ def promote_version(
             continue
         for e in entries:
             if e["model_id"] == model_id:
+                _require_production_eligible(base, model_id)
                 promoted[base_id] = model_id
                 data["_promoted"] = promoted
                 versions_path.write_text(
@@ -216,10 +219,33 @@ def get_production_version(
     data = json.loads(versions_path.read_text(encoding="utf-8"))
     promoted = data.get("_promoted", {})
     if base_id in promoted:
-        return promoted[base_id]
+        promoted_id = promoted[base_id]
+        try:
+            _require_production_eligible(base, promoted_id)
+            return promoted_id
+        except (FileNotFoundError, ValueError):
+            logger.warning("Ignoring ineligible promoted ML model %s", promoted_id)
 
     versions = list_model_versions(base_id, models_dir)
-    return versions[-1].model_id if versions else None
+    for version in reversed(versions):
+        try:
+            _require_production_eligible(base, version.model_id)
+            return version.model_id
+        except (FileNotFoundError, ValueError):
+            continue
+    return None
+
+
+def _require_production_eligible(models_dir: Path, model_id: str) -> None:
+    """Reject models without verified PIT/leakage qualification for promotion."""
+    meta_path = models_dir / model_id / "metadata.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Model metadata not found: {meta_path}")
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    if not metadata.get("production_eligible", False):
+        raise ValueError(
+            f"Model {model_id} is research_only or failed the leakage/PIT qualification gate"
+        )
 
 
 def _base_id_from_config(config: Any, schedule: ModelSchedule) -> str:

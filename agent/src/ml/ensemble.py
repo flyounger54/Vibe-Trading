@@ -198,6 +198,24 @@ def create_ensemble(
 
     predictor = EnsemblePredictor(config, models_dir)
     predictor._ensure_loaded()
+    ineligible = [
+        meta.get("model_id", model_id)
+        for model_id, meta in zip(config.model_ids, predictor._sub_metadata)
+        if not meta.get("production_eligible", False)
+    ]
+    if ineligible:
+        raise ValueError(
+            "Cannot create a production ensemble from research-only or unqualified models: "
+            + ", ".join(ineligible)
+        )
+    preprocessing = predictor._sub_metadata[0].get("preprocessing")
+    if not isinstance(preprocessing, dict) or any(
+        meta.get("factor_ids") != predictor._feature_names or meta.get("preprocessing") != preprocessing
+        for meta in predictor._sub_metadata
+    ):
+        raise ValueError(
+            "Ensemble members must share an identical fitted feature schema and preprocessing manifest"
+        )
 
     if config.method == "stacking":
         first_meta = predictor._sub_metadata[0]
@@ -211,6 +229,9 @@ def create_ensemble(
         "weights": predictor._weights.tolist() if predictor._weights is not None else None,
         "factor_ids": predictor._feature_names,
         "n_sub_models": len(config.model_ids),
+        "production_eligible": True,
+        "research_only": False,
+        "preprocessing": preprocessing,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 

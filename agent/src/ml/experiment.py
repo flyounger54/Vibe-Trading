@@ -75,6 +75,8 @@ def save_experiment(
     data["walk_forward"] = {
         "n_splits": config.n_splits,
         "expanding": config.expanding,
+        "random_seed": config.random_seed,
+        "min_train_samples": config.min_train_samples,
     }
     if config.gap_days > 0:
         data["walk_forward"]["gap_days"] = config.gap_days
@@ -85,6 +87,9 @@ def save_experiment(
             "min_icir": config.selection_config.min_icir,
             "max_corr": config.selection_config.max_corr,
         }
+
+    data["pit_universe"] = config.pit_universe
+    data["calibrate_proba"] = config.calibrate_proba
 
     if schedule:
         data["schedule"] = schedule
@@ -171,4 +176,6 @@ def _parse_experiment(data: dict[str, Any]) -> TrainConfig:
         model_params=model_data.get("params"),
         pit_universe=data.get("pit_universe", True),
         calibrate_proba=data.get("calibrate_proba", True),
+        random_seed=wf_data.get("random_seed", 42),
+        min_train_samples=wf_data.get("min_train_samples", 20),
     )

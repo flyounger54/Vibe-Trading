@@ -34,6 +34,10 @@ export const apiOperations = {
     "method": "POST",
     "path": "/api/v1/swarm/runs/{run_id}/cancel"
   },
+  "v1_cancel_train_api_api_v1_ml_train__job_id__cancel_post": {
+    "method": "POST",
+    "path": "/api/v1/ml/train/{job_id}/cancel"
+  },
   "v1_check_health_api_api_v1_ml_health_post": {
     "method": "POST",
     "path": "/api/v1/ml/health"

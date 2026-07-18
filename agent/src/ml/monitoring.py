@@ -39,9 +39,9 @@ def evaluate_model_health(
     When drift_score > drift_threshold → retrain_recommended = True
     """
     from src.ml.storage import load_model
-    from src.ml.features import build_feature_matrix, preprocess_features
+    from src.ml.features import Preprocessor, build_feature_matrix
     from src.ml.labels import build_labels
-    from src.ml.base_model import LabelConfig, PreprocessConfig
+    from src.ml.base_model import LabelConfig
     from src.tools.alpha_bench_tool import _load_universe_panel
     from scipy.stats import spearmanr
 
@@ -61,17 +61,17 @@ def evaluate_model_health(
         cost_bps=label_cfg_raw.get("cost_bps", 0),
     )
 
-    pp_raw = metadata.get("preprocess_config", {})
-    pp_config = PreprocessConfig(
-        winsorize=pp_raw.get("winsorize", True),
-        zscore=pp_raw.get("zscore", True),
-        fillna_strategy=pp_raw.get("fillna_strategy", "median"),
-    )
+    pp_manifest = metadata.get("preprocessing")
+    if not isinstance(pp_manifest, dict):
+        raise ValueError(
+            f"Model {model_id} lacks a fitted preprocessing manifest and cannot be evaluated safely"
+        )
+    preprocessor = Preprocessor.from_manifest(pp_manifest)
 
     try:
         panel = _load_universe_panel(universe, recent_period)
         features = build_feature_matrix(panel, factor_ids=factor_ids)
-        features, _ = preprocess_features(features, pp_config)
+        features = preprocessor.transform(features)
         labels = build_labels(panel, label_config)
 
         common_idx = features.index.intersection(labels.index)

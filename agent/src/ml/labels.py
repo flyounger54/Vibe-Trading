@@ -12,6 +12,10 @@ from src.ml.base_model import LabelConfig
 logger = logging.getLogger(__name__)
 
 
+class BenchmarkUnavailableError(RuntimeError):
+    """A requested excess-return benchmark could not be retrieved safely."""
+
+
 def build_labels(
     panel: dict[str, pd.DataFrame],
     config: LabelConfig,
@@ -32,8 +36,17 @@ def build_labels(
 
     if config.benchmark is not None:
         bench_returns = _load_benchmark_returns(panel, config.benchmark, config.horizon)
-        if bench_returns is not None:
-            raw_returns = raw_returns.sub(bench_returns, axis=0)
+        if bench_returns is None or bench_returns.dropna().empty:
+            raise BenchmarkUnavailableError(
+                f"Benchmark {config.benchmark!r} is unavailable; refusing to silently "
+                "replace an excess-return label with an absolute-return label"
+            )
+        overlap = raw_returns.index.intersection(bench_returns.index)
+        if overlap.empty:
+            raise BenchmarkUnavailableError(
+                f"Benchmark {config.benchmark!r} has no dates overlapping the training panel"
+            )
+        raw_returns = raw_returns.sub(bench_returns, axis=0)
 
     if config.cost_bps > 0:
         raw_returns = raw_returns - config.cost_bps / 10000.0
@@ -81,7 +94,12 @@ def _load_benchmark_returns(
     benchmark: str,
     horizon: int,
 ) -> pd.Series | None:
-    """Load benchmark returns as a Series indexed by date."""
+    """Load benchmark returns as a Series indexed by date.
+
+    Callers intentionally receive ``None`` only as a signal to fail the
+    requested excess-return training run.  It must never cause a silent
+    fallback to absolute returns.
+    """
     try:
         from src.market_data import fetch_market_data
 

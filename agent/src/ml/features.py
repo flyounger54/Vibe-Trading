@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,137 @@ import pandas as pd
 from src.ml.base_model import PreprocessConfig
 
 logger = logging.getLogger(__name__)
+
+
+class Preprocessor:
+    """A fitted, serialisable feature preprocessor.
+
+    Feature transformations are model parameters: quantiles, moments and
+    imputation values must be estimated from *training rows only* and then
+    reused verbatim for calibration, OOS evaluation and live inference.  The
+    old stateless helper made it far too easy to accidentally refit on an OOS
+    frame, so this object deliberately separates :meth:`fit` and
+    :meth:`transform`.
+    """
+
+    def __init__(self, config: PreprocessConfig) -> None:
+        self.config = config
+        self._columns: list[str] = []
+        self._lower: pd.Series | None = None
+        self._upper: pd.Series | None = None
+        self._mean: pd.Series | None = None
+        self._std: pd.Series | None = None
+        self._fill_values: pd.Series | None = None
+        self._fitted = False
+
+    @property
+    def fitted(self) -> bool:
+        return self._fitted
+
+    def fit(self, training_features: pd.DataFrame) -> Preprocessor:
+        """Fit all learned values on a non-empty training frame only."""
+        if training_features.empty:
+            raise ValueError("Cannot fit preprocessor on an empty training feature frame")
+        if training_features.columns.has_duplicates:
+            raise ValueError("Feature columns must be unique before preprocessing")
+
+        self._columns = list(training_features.columns)
+        fit_data = training_features[self._columns].copy()
+
+        if self.config.winsorize:
+            lo, hi = self.config.winsorize_limits
+            if not 0.0 <= lo <= hi <= 1.0:
+                raise ValueError("winsorize_limits must satisfy 0 <= lower <= upper <= 1")
+            self._lower = fit_data.quantile(lo)
+            self._upper = fit_data.quantile(hi)
+            fit_data = fit_data.clip(lower=self._lower, upper=self._upper, axis=1)
+
+        if self.config.zscore:
+            self._mean = fit_data.mean()
+            self._std = fit_data.std().replace(0, 1.0).fillna(1.0)
+
+        if self.config.fillna_strategy == "median":
+            # Median is intentionally based on the raw training distribution,
+            # matching the values presented to the clip/z-score transform.
+            self._fill_values = fit_data.median()
+        elif self.config.fillna_strategy not in {"zero", "ffill", "none"}:
+            raise ValueError(f"Unknown fillna_strategy: {self.config.fillna_strategy!r}")
+
+        self._fitted = True
+        return self
+
+    def transform(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Apply fitted parameters without inspecting OOS distribution values."""
+        if not self._fitted:
+            raise RuntimeError("Preprocessor must be fitted before transform")
+        missing = [c for c in self._columns if c not in features.columns]
+        extra = [c for c in features.columns if c not in self._columns]
+        if missing or extra:
+            raise ValueError(
+                "Feature schema differs from fitted preprocessor "
+                f"(missing={missing}, extra={extra})"
+            )
+
+        result = features.loc[:, self._columns].copy()
+        if self._lower is not None and self._upper is not None:
+            result = result.clip(lower=self._lower, upper=self._upper, axis=1)
+        if self._mean is not None and self._std is not None:
+            result = (result - self._mean) / self._std
+
+        if self.config.fillna_strategy == "median" and self._fill_values is not None:
+            result = result.fillna(self._fill_values)
+        elif self.config.fillna_strategy == "zero":
+            result = result.fillna(0.0)
+        elif self.config.fillna_strategy == "ffill":
+            # Group-wise forward fill never reads a future row.  We do not
+            # bridge a train/test boundary implicitly; callers can carry an
+            # explicit, audited state if they need that behaviour.
+            result = result.groupby(level="code").ffill()
+        return result
+
+    def manifest(self) -> dict[str, Any]:
+        """Return JSON-safe fitted values for the model provenance manifest."""
+        if not self._fitted:
+            raise RuntimeError("Preprocessor must be fitted before serialisation")
+        return {
+            "config": asdict(self.config),
+            "columns": self._columns,
+            "winsorize_lower": self._lower.to_dict() if self._lower is not None else None,
+            "winsorize_upper": self._upper.to_dict() if self._upper is not None else None,
+            "zscore_mean": self._mean.to_dict() if self._mean is not None else None,
+            "zscore_std": self._std.to_dict() if self._std is not None else None,
+            "fill_values": self._fill_values.to_dict() if self._fill_values is not None else None,
+        }
+
+    @classmethod
+    def from_manifest(cls, manifest: dict[str, Any]) -> Preprocessor:
+        """Restore exact training parameters for monitoring/live inference."""
+        raw_config = dict(manifest.get("config") or {})
+        if "winsorize_limits" in raw_config:
+            raw_config["winsorize_limits"] = tuple(raw_config["winsorize_limits"])
+        instance = cls(PreprocessConfig(**raw_config))
+        columns = manifest.get("columns")
+        if not isinstance(columns, list) or not columns:
+            raise ValueError("Preprocessing manifest is missing its feature schema")
+        instance._columns = list(columns)
+        instance._lower = _series_or_none(manifest.get("winsorize_lower"), instance._columns)
+        instance._upper = _series_or_none(manifest.get("winsorize_upper"), instance._columns)
+        instance._mean = _series_or_none(manifest.get("zscore_mean"), instance._columns)
+        instance._std = _series_or_none(manifest.get("zscore_std"), instance._columns)
+        instance._fill_values = _series_or_none(manifest.get("fill_values"), instance._columns)
+        instance._fitted = True
+        return instance
+
+
+def _series_or_none(value: Any, columns: list[str]) -> pd.Series | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Invalid preprocessing parameter in manifest")
+    missing = [column for column in columns if column not in value]
+    if missing:
+        raise ValueError(f"Preprocessing manifest is missing parameters for {missing}")
+    return pd.Series({column: value[column] for column in columns}, dtype=float)
 
 
 def load_pit_universe(
@@ -181,46 +313,30 @@ def preprocess_features(
     features: pd.DataFrame,
     config: PreprocessConfig,
     fit_dates: np.ndarray | None = None,
+    preprocessor: Preprocessor | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Preprocess feature matrix. Fit parameters only on fit_dates to prevent leakage.
+    """Backward-compatible wrapper around :class:`Preprocessor`.
 
-    Returns (processed_features, preprocess_params_dict).
+    New training code should use ``Preprocessor.fit(train).transform(test)``
+    directly.  Passing a fitted object is the only supported way to transform
+    a separate OOS frame; ``fit_dates`` that select no rows is rejected rather
+    than silently fitting on the test set.
     """
-    result = features.copy()
-    params: dict[str, Any] = {}
-    dates = result.index.get_level_values("date")
+    if preprocessor is not None:
+        if preprocessor.config != config:
+            raise ValueError("Provided preprocessor was fitted with a different config")
+        return preprocessor.transform(features), preprocessor.manifest()
 
-    if fit_dates is not None:
-        fit_mask = dates.isin(fit_dates)
+    if fit_dates is None:
+        fit_data = features
     else:
-        fit_mask = pd.Series(True, index=result.index)
+        dates = features.index.get_level_values("date")
+        fit_data = features.loc[dates.isin(fit_dates)]
+        if fit_data.empty:
+            raise ValueError(
+                "fit_dates select no rows in this frame; fit on training data and pass "
+                "the resulting Preprocessor when transforming OOS data"
+            )
 
-    if config.winsorize:
-        lo, hi = config.winsorize_limits
-        fit_data = result.loc[fit_mask]
-        lower = fit_data.quantile(lo)
-        upper = fit_data.quantile(hi)
-        result = result.clip(lower=lower, upper=upper, axis=1)
-        params["winsorize_lower"] = lower.to_dict()
-        params["winsorize_upper"] = upper.to_dict()
-
-    if config.zscore:
-        fit_data = result.loc[fit_mask]
-        mean = fit_data.mean()
-        std = fit_data.std().replace(0, 1.0)
-        result = (result - mean) / std
-        params["zscore_mean"] = mean.to_dict()
-        params["zscore_std"] = std.to_dict()
-
-    if config.fillna_strategy == "median":
-        fit_data = result.loc[fit_mask]
-        medians = fit_data.median()
-        result = result.fillna(medians)
-        params["fillna_medians"] = medians.to_dict()
-    elif config.fillna_strategy == "zero":
-        result = result.fillna(0.0)
-    elif config.fillna_strategy == "ffill":
-        result = result.groupby(level="code").ffill()
-    # "none" → no fill
-
-    return result, params
+    fitted = Preprocessor(config).fit(fit_data)
+    return fitted.transform(features), fitted.manifest()
