@@ -21,7 +21,7 @@ from src.config.schema import (
 )
 from src.live.classification import ToolClass, classify_tool
 from src.live.halt import halt_flag_set
-from src.live.order_guard import LiveOrderGuardTool
+from src.live.order_guard import LiveCancelGuardTool, LiveOrderGuardTool
 from src.tools.mcp import MCPRemoteTool
 from src.trading.connectors.alpaca.classification import ALPACA_TOOL_CLASS
 from src.trading.connectors.binance.classification import BINANCE_TOOL_CLASS
@@ -210,6 +210,10 @@ def wrap_live_broker_tools(
         if tool_class is ToolClass.READ:
             tool.is_readonly = True
             result.append(tool)
+        elif spec.remote_name == "cancel_order":
+            # Risk-reducing cancellation remains available even while halted;
+            # it never requires mandate or live qualification.
+            result.append(LiveCancelGuardTool(tool._adapter, spec, broker=broker))
         elif halted:
             # WRITE/UNKNOWN + halt tripped -> do not even hand it to the model.
             logger.warning(

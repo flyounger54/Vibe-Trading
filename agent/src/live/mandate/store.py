@@ -27,6 +27,7 @@ import logging
 from src.live.mandate.model import (
     AssetClass,
     ConsentMeta,
+    ExecutionControls,
     HardCaps,
     InstrumentType,
     Mandate,
@@ -84,6 +85,7 @@ def _parse_mandate(raw: object) -> Mandate:
     caps = _require_dict(raw["hard_caps"], "hard_caps")
     universe = _require_dict(raw["universe"], "universe")
     consent = _require_dict(raw["consent"], "consent")
+    execution = _require_dict(raw["execution_controls"], "execution_controls")
 
     hard_caps = HardCaps(
         account_funding_usd=float(caps["account_funding_usd"]),
@@ -108,11 +110,24 @@ def _parse_mandate(raw: object) -> Mandate:
         account_ref=str(consent["account_ref"]),
         expires_at=str(consent["expires_at"]),
     )
+    execution_controls = ExecutionControls(
+        max_daily_loss_usd=_positive_float(execution["max_daily_loss_usd"], "max_daily_loss_usd"),
+        max_price_deviation_bps=_positive_float(
+            execution["max_price_deviation_bps"], "max_price_deviation_bps"
+        ),
+        max_quote_age_seconds=_positive_float(
+            execution["max_quote_age_seconds"], "max_quote_age_seconds"
+        ),
+        max_clock_drift_seconds=_positive_float(
+            execution["max_clock_drift_seconds"], "max_clock_drift_seconds"
+        ),
+    )
     return Mandate(
         schema_version=int(raw["schema_version"]),
         hard_caps=hard_caps,
         universe=universe_constraint,
         consent=consent_meta,
+        execution_controls=execution_controls,
         # Optional per-mandate halt-behavior flag (SPEC §7.5 #6). Absent on an
         # old mandate.json → False (cancel-only, the safe default), keeping the
         # read backward-compatible. Read on a halt trip by src.live.runtime.flatten.
@@ -130,3 +145,11 @@ def _require_dict(value: object, field: str) -> dict:
 def _opt_float(value: object) -> float | None:
     """Coerce an optional numeric field to ``float | None``."""
     return None if value is None else float(value)
+
+
+def _positive_float(value: object, field: str) -> float:
+    """Parse a finite positive execution-control value."""
+    parsed = float(value)
+    if parsed <= 0 or parsed != parsed or parsed in (float("inf"), float("-inf")):
+        raise ValueError(f"execution_controls.{field} must be finite and positive")
+    return parsed

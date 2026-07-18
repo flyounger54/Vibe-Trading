@@ -399,6 +399,10 @@ class MandateLimits(BaseModel):
     max_trades_per_day: int
     allowed_instruments: List[str]
     account_funding_usd: float
+    max_daily_loss_usd: float
+    max_price_deviation_bps: float
+    max_quote_age_seconds: float
+    max_clock_drift_seconds: float
 
 
 class ActiveMandateState(BaseModel):
@@ -2904,6 +2908,25 @@ async def commit_mandate_endpoint(payload: CommitMandateRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Bind the acknowledgement event back to the exact rendered option.  The
+    # commit layer returns the resolved profile, but the surface also needs the
+    # proposal/ordinal keys to collapse the matching consent card and display
+    # the limits the user just approved.
+    resolved_profile = result.get("resolved_profile")
+    result["proposal_id"] = payload.proposal_id
+    result["selected_ordinal"] = payload.selected_ordinal
+    if isinstance(resolved_profile, dict):
+        for key in (
+            "max_order_usd",
+            "daily_trade_cap",
+            "max_daily_loss_usd",
+            "max_price_deviation_bps",
+            "max_quote_age_seconds",
+            "max_clock_drift_seconds",
+        ):
+            if key in resolved_profile:
+                result[key] = resolved_profile[key]
+
     _emit_live_event(payload.session_id, "mandate.committed", result)
     _emit_live_event(
         payload.session_id,
@@ -3025,6 +3048,10 @@ def _active_mandate_state(broker: str) -> Optional[ActiveMandateState]:
 
     consent = mandate.consent
     caps = mandate.hard_caps
+    controls = mandate.execution_controls
+    if controls is None:  # schema-v2 storage should make this unreachable
+        logger.error("schema-v2 mandate for %s has no execution controls", broker)
+        return None
     expires_in: Optional[int] = None
     expired = False
     try:
@@ -3054,6 +3081,10 @@ def _active_mandate_state(broker: str) -> Optional[ActiveMandateState]:
             max_trades_per_day=caps.max_trades_per_day,
             allowed_instruments=[str(getattr(i, "value", i)) for i in caps.allowed_instruments],
             account_funding_usd=caps.account_funding_usd,
+            max_daily_loss_usd=controls.max_daily_loss_usd,
+            max_price_deviation_bps=controls.max_price_deviation_bps,
+            max_quote_age_seconds=controls.max_quote_age_seconds,
+            max_clock_drift_seconds=controls.max_clock_drift_seconds,
         ),
     )
 

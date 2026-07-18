@@ -38,12 +38,13 @@ is obtainable — so the notional/exposure/leverage caps stay enforceable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from src.live.audit import LiveActionEvent, write_live_action
+from src.live.audit import LiveActionEvent, LiveActionKind, LiveActionOutcome, write_live_action
 from src.live.enforcement import (
     BREACH_KIND_INSTRUMENT,
     BREACH_KIND_UNIVERSE,
@@ -54,11 +55,21 @@ from src.live.enforcement import (
     last_price_usd,
 )
 from src.live.extractors import get_extractor
-from src.live.halt import halt_flag_set
+from src.live.execution_risk import (
+    check_execution_risk,
+    normalize_account_equity_usd,
+    normalize_order_notional,
+    normalize_quote,
+    observe_daily_loss,
+    open_order_reservations_usd,
+)
+from src.live.halt import halt_flag_set, trip_halt
 from src.live.mandate.model import MANDATE_SCHEMA_VERSION, Mandate
 from src.live.mandate.store import load_mandate
 from src.live.daily_count import increment_daily_count, read_daily_count
 from src.live.qualification import QualificationDecision, evaluate_live_qualification
+from src.live.order_ledger import OrderLedgerError, OrderOutcome, claim_order, complete_order
+from src.live.runtime.reconcile import reconcile
 from src.tools.mcp import MCPRemoteTool, MCPRemoteToolSpec, MCPServerAdapter
 
 logger = logging.getLogger(__name__)
@@ -72,6 +83,7 @@ LIVE_ACTION_RESULT_KEY = "live_action"
 _POSITIONS_TOOLS = ("get_positions",)
 _BALANCE_TOOLS = ("get_account",)
 _QUOTE_TOOLS = ("get_quotes",)
+_ORDERS_TOOLS = ("list_orders",)
 
 _DECISION_ALLOW = "allow"
 _DECISION_DENY = "deny"
@@ -134,6 +146,12 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 checked=["mandate"],
                 mandate=mandate,
             )
+        if mandate.execution_controls is None:
+            return self._deny(
+                reason="mandate has no Node 12B execution controls",
+                checked=["mandate", "execution_controls"],
+                mandate=mandate,
+            )
 
         if self._is_expired(mandate):
             return self._deny(
@@ -159,19 +177,123 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 mandate=mandate,
             )
 
-        # Reconcile any quantity into a single authoritative notional BEFORE the
-        # mandate checks so a {notional_usd, quantity} pair can't bypass the
-        # notional cap (H3) and a quantity-only order stays cap-enforceable (H4).
-        intent = self._normalize_intent_notional(intent)
-        if intent is None:
+        channel = f"live:{mandate.consent.account_ref}"
+        fingerprint = _order_fingerprint(intent, kwargs)
+        try:
+            claim = claim_order(
+                self.broker,
+                channel,
+                intent.client_order_id or "",
+                fingerprint,
+            )
+        except OrderLedgerError as exc:
             return self._deny(
-                reason="quantity order notional could not be priced (fail-closed)",
-                checked=["mandate", "expiry", "halt_flag", "intent", "quote"],
+                reason=f"order ledger unavailable: {exc}",
+                checked=["mandate", "expiry", "halt_flag", "client_order_id"],
+                mandate=mandate,
+            )
+        if claim.action == "replay":
+            replay = dict(claim.result or {})
+            replay["idempotency_replayed"] = True
+            replay["client_order_id"] = intent.client_order_id
+            return json.dumps(replay, ensure_ascii=False)
+        if claim.action in {"pending", "conflict"}:
+            reason = (
+                "client_order_id is already pending; broker call will not be retried"
+                if claim.action == "pending"
+                else "client_order_id was already used for a different order"
+            )
+            return self._deny(
+                reason=reason,
+                checked=["mandate", "expiry", "halt_flag", "client_order_id"],
                 mandate=mandate,
             )
 
+        # Reconcile any quantity into a single authoritative notional BEFORE the
+        # mandate checks so a {notional_usd, quantity} pair can't bypass the
+        # notional cap (H3) and a quantity-only order stays cap-enforceable (H4).
+        quote = normalize_quote(
+            self._broker_quote_payload(intent.symbol),
+            symbol=intent.symbol,
+        )
+        intent = normalize_order_notional(intent, quote) if quote is not None else None
+        if quote is None or intent is None:
+            refusal = self._deny(
+                reason="quantity order notional could not be priced (fail-closed)",
+                checked=["mandate", "expiry", "halt_flag", "intent", "quote_time", "fx"],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+
         positions = self._read_first(self._read_tools("positions", _POSITIONS_TOOLS))
         balance = self._read_first(self._read_tools("account", _BALANCE_TOOLS))
+        open_orders = self._read_first(self._read_tools("orders", _ORDERS_TOOLS))
+        position_rows = _payload_rows(positions, "positions")
+        order_rows = _payload_rows(open_orders, "open_orders", fallback_key="orders")
+        if position_rows is None or order_rows is None or not isinstance(balance, dict):
+            refusal = self._deny(
+                reason="positions, balance, or open orders unavailable (fail-closed)",
+                checked=["broker_snapshot"],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+        try:
+            report = reconcile(
+                self.broker,
+                lambda: position_rows,
+                lambda: balance,
+                lambda: order_rows,
+            )
+        except Exception as exc:  # noqa: BLE001
+            refusal = self._deny(
+                reason=f"reconciliation failed: {exc}",
+                checked=["reconciliation"],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+        if not report.is_safe:
+            refusal = self._deny(
+                reason="reconciliation is unsafe; order was not sent",
+                checked=["reconciliation"],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+
+        reservations = open_order_reservations_usd(
+            open_orders,
+            max_fx_age_seconds=mandate.execution_controls.max_quote_age_seconds,
+            max_clock_drift_seconds=mandate.execution_controls.max_clock_drift_seconds,
+        )
+        equity = normalize_account_equity_usd(balance, default_currency="USD")
+        if reservations is None or equity is None:
+            refusal = self._deny(
+                reason="open-order reservations or account equity could not be normalized",
+                checked=["open_order_reservations", "account_equity", "fx"],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+        try:
+            daily_loss = observe_daily_loss(self.broker, channel, equity)
+        except Exception as exc:  # noqa: BLE001
+            refusal = self._deny(
+                reason=f"daily-loss state unavailable: {exc}",
+                checked=["max_daily_loss_usd"],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+        risk_breach = check_execution_risk(
+            mandate.execution_controls,
+            intent,
+            quote,
+            daily_loss_usd=daily_loss,
+        )
+        if risk_breach is not None:
+            refusal = self._deny(
+                reason=f"{risk_breach.code}: {risk_breach.detail}",
+                checked=[risk_breach.code],
+                mandate=mandate,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
         daily_count = self._read_daily_count()
 
         breach = check_mandate(
@@ -182,6 +304,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
             broker=self.broker,
             remote_tool=self.remote_name,
             daily_count=daily_count,
+            reserved_notional_usd=reservations,
         )
 
         if breach is None:
@@ -190,6 +313,9 @@ class LiveOrderGuardTool(MCPRemoteTool):
             )
             if not qualification.allowed:
                 return self._deny_qualification(
+                    channel=channel,
+                    fingerprint=fingerprint,
+                    kwargs=kwargs,
                     mandate=mandate,
                     intent=intent,
                     qualification=qualification,
@@ -199,11 +325,15 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 intent=intent,
                 kwargs=kwargs,
                 qualification=qualification,
+                channel=channel,
+                fingerprint=fingerprint,
             )
 
         if breach.kind in (BREACH_KIND_UNIVERSE, BREACH_KIND_INSTRUMENT):
-            return self._deny_breach(breach, mandate=mandate, intent=intent, reauth=False)
-        return self._deny_breach(breach, mandate=mandate, intent=intent, reauth=True)
+            refusal = self._deny_breach(breach, mandate=mandate, intent=intent, reauth=False)
+        else:
+            refusal = self._deny_breach(breach, mandate=mandate, intent=intent, reauth=True)
+        return self._complete_blocked(channel, fingerprint, kwargs, refusal)
 
     # -- intent normalization (quantity → notional) -------------------------
 
@@ -250,6 +380,10 @@ class LiveOrderGuardTool(MCPRemoteTool):
             notional_usd=enforced,
             quantity=intent.quantity,
             instrument_type=intent.instrument_type,
+            asset_class=intent.asset_class,
+            client_order_id=intent.client_order_id,
+            order_type=intent.order_type,
+            limit_price=intent.limit_price,
         )
 
     def _quote_price(self, intent: OrderIntent) -> float | None:
@@ -293,6 +427,11 @@ class LiveOrderGuardTool(MCPRemoteTool):
         Returns:
             A positive USD price, or ``None``.
         """
+        result = self._broker_quote_payload(symbol)
+        return _parse_quote_price(result, symbol)
+
+    def _broker_quote_payload(self, symbol: str) -> object:
+        """Return the first successful raw quote payload with timestamp data."""
         for remote in self._read_tools("quote", _QUOTE_TOOLS):
             try:
                 result = self._adapter.call_tool(
@@ -303,9 +442,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 continue
             if isinstance(result, dict) and result.get("status") == "error":
                 continue
-            price = _parse_quote_price(result, symbol)
-            if price is not None:
-                return price
+            return result
         return None
 
     # -- decision helpers ---------------------------------------------------
@@ -317,6 +454,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
         intent: OrderIntent,
         kwargs: dict,
         qualification: QualificationDecision,
+        channel: str,
+        fingerprint: str,
     ) -> str:
         """Forward the order unchanged; consume a count + audit only on success.
 
@@ -334,18 +473,63 @@ class LiveOrderGuardTool(MCPRemoteTool):
         under :data:`LIVE_ACTION_RESULT_KEY` so the api_server SSE relay can emit
         a ``live.action`` event without touching the agent loop (H5).
         """
-        forwarded = super().execute(**kwargs)
-        broker_response = self._safe_json(forwarded)
-        is_error = self._is_error_envelope(broker_response)
-
         checked = [
-            "mandate", "expiry", "halt_flag", "intent",
+            "mandate", "expiry", "halt_flag", "client_order_id", "reconciliation",
+            "quote_freshness", "clock_drift", "fx_normalization", "price_deviation",
+            "max_daily_loss_usd", "open_order_reservations", "intent",
             "exclude_symbols", "allowed_instruments", "asset_classes",
-            "max_order_notional_usd", "max_total_exposure_usd",
-            "max_leverage", "max_trades_per_day", "account_funding_usd",
-            "universe_floors",
+            "max_order_notional_usd", "max_total_exposure_usd", "max_leverage",
+            "max_trades_per_day", "account_funding_usd", "universe_floors",
             "live_qualification",
         ]
+        pre_record = self._audit(
+            kind="order_submitted",
+            outcome="accepted",
+            mandate=mandate,
+            intent=intent,
+            broker_request=dict(kwargs),
+            broker_response=None,
+            gate_decision={
+                "allowed": True,
+                "decision": _DECISION_ALLOW,
+                "phase": "pre_write",
+                "checked_limits": checked,
+                "qualification": qualification.to_dict(),
+            },
+        )
+        if pre_record is None:
+            refusal = self._refusal(
+                decision=_DECISION_DENY,
+                reason="live audit unavailable before broker write",
+                reauth=False,
+            )
+            return self._complete_blocked(channel, fingerprint, kwargs, refusal)
+
+        raised = False
+        try:
+            forwarded = super().execute(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            raised = True
+            forwarded = json.dumps({"status": "error", "error": str(exc)})
+        broker_response = self._safe_json(forwarded)
+        is_error = self._is_error_envelope(broker_response)
+        ledger_result = broker_response if isinstance(broker_response, dict) else {
+            "status": "error", "error": "unparseable broker result"
+        }
+        outcome: OrderOutcome = "ambiguous" if raised else "error" if is_error else "accepted"
+        ledger_error: str | None = None
+        try:
+            complete_order(
+                self.broker,
+                channel,
+                intent.client_order_id or "",
+                fingerprint,
+                outcome=outcome,
+                result=ledger_result,
+            )
+        except OrderLedgerError as exc:
+            trip_halt("order_ledger", f"post-write ledger failure: {exc}", self.broker)
+            ledger_error = str(exc)
         if is_error:
             record = self._audit(
                 kind="order_rejected",
@@ -379,11 +563,39 @@ class LiveOrderGuardTool(MCPRemoteTool):
                     "qualification": qualification.to_dict(),
                 },
             )
-        return self._embed_live_action(forwarded, record)
+        if record is None:
+            trip_halt("live_audit", "post-write live audit failure", self.broker)
+            payload = dict(ledger_result)
+            payload.update(
+                {
+                    "safety_halt": True,
+                    "audit_error": "post-write live audit failed",
+                    LIVE_ACTION_RESULT_KEY: pre_record,
+                    "client_order_id": intent.client_order_id,
+                }
+            )
+            if ledger_error is not None:
+                payload["ledger_error"] = ledger_error
+            return json.dumps(payload, ensure_ascii=False)
+        embedded = self._embed_live_action(forwarded, record)
+        try:
+            payload = json.loads(embedded)
+        except (TypeError, ValueError):
+            return embedded
+        if isinstance(payload, dict):
+            payload["client_order_id"] = intent.client_order_id
+            if ledger_error is not None:
+                payload["safety_halt"] = True
+                payload["ledger_error"] = ledger_error
+            return json.dumps(payload, ensure_ascii=False)
+        return embedded
 
     def _deny_qualification(
         self,
         *,
+        channel: str,
+        fingerprint: str,
+        kwargs: dict,
         mandate: Mandate,
         intent: OrderIntent,
         qualification: QualificationDecision,
@@ -405,13 +617,14 @@ class LiveOrderGuardTool(MCPRemoteTool):
             },
             error=qualification.reason,
         )
-        return self._refusal(
+        refusal = self._refusal(
             decision="qualification_required",
             reason=qualification.reason,
             reauth=False,
             record=record,
             qualification=snapshot,
         )
+        return self._complete_blocked(channel, fingerprint, kwargs, refusal)
 
     def _deny(
         self,
@@ -520,6 +733,31 @@ class LiveOrderGuardTool(MCPRemoteTool):
             }
         return json.dumps(payload, ensure_ascii=False)
 
+    def _complete_blocked(
+        self,
+        channel: str,
+        fingerprint: str,
+        kwargs: dict[str, Any],
+        refusal: str,
+    ) -> str:
+        """Finalize a reserved order as blocked without a broker write."""
+        response = self._safe_json(refusal) or {
+            "status": "blocked", "reason": "order blocked"
+        }
+        try:
+            complete_order(
+                self.broker,
+                channel,
+                str(kwargs.get("client_order_id") or ""),
+                fingerprint,
+                outcome="blocked",
+                result=response,
+            )
+        except OrderLedgerError as exc:
+            response["ledger_error"] = str(exc)
+            return json.dumps(response, ensure_ascii=False)
+        return refusal
+
     # -- read snapshot ------------------------------------------------------
 
     def _read_first(self, candidates: tuple[str, ...]) -> object:
@@ -571,8 +809,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
     def _audit(
         self,
         *,
-        kind: str,
-        outcome: str,
+        kind: LiveActionKind,
+        outcome: LiveActionOutcome,
         mandate: Mandate | None,
         intent: OrderIntent | None,
         broker_request: dict | None,
@@ -584,8 +822,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
 
         The returned record (identical to what was written to the ledger) is
         embedded under :data:`LIVE_ACTION_RESULT_KEY` in the tool_result so the
-        SSE relay can emit a ``live.action`` event. Auditing must never block a
-        decision, so a write failure logs and returns ``None``.
+        SSE relay can emit a ``live.action`` event. A write failure is returned
+        as ``None``: callers deny before an order write, or halt after a write.
 
         Returns:
             The redacted audit record, or ``None`` when the write failed.
@@ -607,7 +845,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 error=error,
             )
             return _record_live_action(event)
-        except Exception as exc:  # auditing must never block a decision
+        except Exception as exc:  # caller applies the phase-specific safety rule
             logger.warning("live-action audit write failed (%s): %s", kind, exc)
             return None
 
@@ -679,6 +917,83 @@ class LiveOrderGuardTool(MCPRemoteTool):
         return json.dumps(payload, ensure_ascii=False)
 
 
+class LiveCancelGuardTool(MCPRemoteTool):
+    """Always-available risk-reducing cancel wrapper with best-effort audit.
+
+    Cancellation remains callable when mandate, qualification, or kill switch
+    state is unavailable.  Audit failures are surfaced but never prevent a
+    risk-reducing broker write.
+    """
+
+    repeatable = False
+    is_readonly = False
+
+    def __init__(
+        self,
+        adapter: MCPServerAdapter,
+        spec: MCPRemoteToolSpec,
+        *,
+        broker: str | None = None,
+        session_id: str = "",
+    ) -> None:
+        super().__init__(adapter, spec)
+        self.broker = (broker or spec.server_name or "").strip().lower()
+        self.session_id = session_id
+
+    def execute(self, **kwargs: Any) -> str:
+        mandate = load_mandate(self.broker)
+        consent = mandate.consent if mandate is not None else None
+
+        def audit(
+            kind: LiveActionKind,
+            outcome: LiveActionOutcome,
+            response: dict | None,
+            error: str | None = None,
+        ):
+            try:
+                return _record_live_action(
+                    LiveActionEvent(
+                        kind=kind,
+                        session_id=self.session_id,
+                        outcome=outcome,
+                        server=self.broker,
+                        remote_tool=self._spec.remote_name,
+                        intent_normalized=f"cancel {kwargs.get('order_id') or ''}".strip(),
+                        mandate_snapshot_ref=(
+                            consent.consent_token_sha256 if consent else None
+                        ),
+                        consent_record_ref=consent.account_ref if consent else None,
+                        broker_request=dict(kwargs),
+                        broker_response=response,
+                        gate_decision={
+                            "allowed": True,
+                            "decision": "risk_reducing_cancel",
+                            "qualification_required": False,
+                            "halt_exempt": True,
+                        },
+                        error=error,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - never block cancellation
+                logger.warning("cancel audit failed for %s: %s", self.broker, exc)
+                return None
+
+        audit("cancel_requested", "accepted", None)
+        try:
+            forwarded = super().execute(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            forwarded = json.dumps({"status": "error", "error": str(exc)})
+        response = LiveOrderGuardTool._safe_json(forwarded)
+        is_error = LiveOrderGuardTool._is_error_envelope(response)
+        record = audit(
+            "order_cancelled",
+            "error" if is_error else "accepted",
+            response,
+            LiveOrderGuardTool._error_message(response) if is_error else None,
+        )
+        return LiveOrderGuardTool._embed_live_action(forwarded, record)
+
+
 def _record_live_action(event: LiveActionEvent) -> dict | None:
     """Call ``write_live_action`` with the keyword contract, fall back positional.
 
@@ -692,6 +1007,47 @@ def _record_live_action(event: LiveActionEvent) -> dict | None:
         return write_live_action(event, event_callback=None, trace_writer=None)
     except TypeError:
         return write_live_action(event)
+
+
+def _order_fingerprint(intent: OrderIntent, kwargs: dict[str, Any]) -> str:
+    """Hash the canonical economic intent for durable idempotency."""
+    payload = {
+        "symbol": intent.symbol,
+        "side": intent.side,
+        "notional_usd": intent.notional_usd,
+        "quantity": intent.quantity,
+        "instrument_type": intent.instrument_type.value,
+        "asset_class": intent.asset_class.value if intent.asset_class else None,
+        "order_type": intent.order_type,
+        "limit_price": intent.limit_price,
+        "time_in_force": kwargs.get("time_in_force"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _payload_rows(
+    payload: object,
+    key: str,
+    *,
+    fallback_key: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """Extract normalized rows from remote read envelopes."""
+    if isinstance(payload, list):
+        rows: object = payload
+    elif isinstance(payload, dict):
+        rows = payload.get(key)
+        if rows is None and fallback_key is not None:
+            rows = payload.get(fallback_key)
+        if rows is None and key == "positions" and payload:
+            # Robinhood may return a mapping of symbol -> position object.
+            candidates = list(payload.values())
+            rows = candidates if all(isinstance(row, dict) for row in candidates) else None
+    else:
+        return None
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return None
+    return rows
 
 
 def _parse_quote_price(result: object, symbol: str) -> float | None:

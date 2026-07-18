@@ -338,6 +338,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     """Place a stock order against the account in ``config``.
 
@@ -484,6 +485,8 @@ def place_order(
         "quantity": qty,
         "limit_price": px,
         "time_in_force": tif,
+        "client_order_id": client_order_id,
+        "client_order_id_scope": "vibe_only",
     }
 
 
@@ -690,6 +693,7 @@ def _order_to_dict(item: Any) -> dict[str, Any]:
         "limit_price": _first(item, ("limit_price",)),
         "status": str(_first(item, ("status",)) or ""),
         "currency": _first(contract, ("currency",)),
+        "client_order_id": _first(item, ("client_id", "client_order_id")),
     }
 
 
@@ -705,6 +709,7 @@ def _quote_to_dict(item: Any) -> dict[str, Any]:
         "prev_close": _first(item, ("pre_close", "prev_close")),
         "volume": _first(item, ("volume",)),
         "time": str(_first(item, ("latest_time", "time"), "")),
+        "currency": _first(item, ("currency",)) or _first(_obj_get(item, "contract"), ("currency",)),
     }
 
 

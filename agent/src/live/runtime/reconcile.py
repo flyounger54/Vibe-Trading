@@ -47,12 +47,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from src.live.mandate.store import load_mandate
+from src.live.order_ledger import accepted_client_order_ids
 from src.live.paths import broker_dir
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ _STATE_FILENAME = "runtime_state.json"
 
 #: Schema version of the persisted runtime state document.
 RUNTIME_STATE_SCHEMA_VERSION = 1
+_MAX_STATE_BYTES = 8 * 1024 * 1024
 
 #: A broker READ callable: takes no args, returns the broker truth payload.
 #: ``read_positions`` / ``read_open_orders`` return a sequence of dicts;
@@ -69,6 +71,10 @@ RUNTIME_STATE_SCHEMA_VERSION = 1
 #: tools at runtime and fabricated stubs in tests. None of them mutate state.
 ReadList = Callable[[], Sequence[Mapping[str, Any]]]
 ReadDict = Callable[[], Mapping[str, Any]]
+
+
+class ReconcileStateError(RuntimeError):
+    """Durable reconciliation state is corrupt or cannot be trusted."""
 
 
 class DeltaKind:
@@ -96,11 +102,18 @@ class DeltaKind:
     UNKNOWN_FILL = "unknown_fill"
     ORPHAN_ORDER = "orphan_order"
     MID_ORDER_AMBIGUOUS = "mid_order_ambiguous"
+    UNAUTHORIZED_ORDER = "unauthorized_order"
 
 
 #: Delta kinds that mean real money may have moved without a clean audit trail,
 #: so the runner MUST halt and surface rather than trade on the next tick.
-_HALTING_KINDS = frozenset({DeltaKind.UNKNOWN_FILL, DeltaKind.MID_ORDER_AMBIGUOUS})
+_HALTING_KINDS = frozenset(
+    {
+        DeltaKind.UNKNOWN_FILL,
+        DeltaKind.MID_ORDER_AMBIGUOUS,
+        DeltaKind.UNAUTHORIZED_ORDER,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -273,6 +286,8 @@ def reconcile(
     read_positions: ReadList,
     read_balance: ReadDict,
     read_open_orders: ReadList,
+    *,
+    authorized_client_order_ids: Sequence[str] | None = None,
 ) -> ReconcileReport:
     """Reconcile broker truth against the durable last-known state.
 
@@ -308,6 +323,18 @@ def reconcile(
     if mandate is None:
         logger.info("reconcile(%s): no committed mandate on file (provenance only)", broker)
 
+    if authorized_client_order_ids is None:
+        authorized_client_order_ids = (
+            tuple(
+                accepted_client_order_ids(
+                    broker,
+                    f"live:{mandate.consent.account_ref}",
+                )
+            )
+            if mandate is not None
+            else ()
+        )
+
     prior = _load_state(broker)
     had_prior_state = prior is not None
     recorded_orders = list(prior.get("open_orders", [])) if prior else []
@@ -317,14 +344,23 @@ def reconcile(
     broker_positions = list(read_positions())
     balance = dict(read_balance())  # pulled for the persisted snapshot + caller context
 
-    # On a cold/first start there is no durable baseline to diff against, so
-    # broker truth simply BECOMES the baseline and there are zero deltas — a
-    # position we never recorded is not an "unknown fill" when we never recorded
-    # anything. Diffing only runs once a prior durable state exists.
     deltas: list[ReconcileDelta] = []
     if had_prior_state:
-        deltas.extend(_diff_orders(recorded_orders, broker_orders))
+        deltas.extend(
+            _diff_orders(
+                recorded_orders,
+                broker_orders,
+                authorized_client_order_ids,
+            )
+        )
         deltas.extend(_diff_positions(recorded_positions, broker_positions))
+    else:
+        # Existing positions may be deliberately held before this runtime is
+        # first enabled and are still bounded by the exposure gate. Resting
+        # orders are different: they can execute immediately, so a cold start
+        # may adopt them only when the tamper-evident order ledger proves this
+        # exact channel previously accepted their client id.
+        deltas.extend(_diff_orders((), broker_orders, authorized_client_order_ids))
 
     recorded_client_order_ids = tuple(
         coid for coid in (_client_order_id(o) for o in recorded_orders) if coid
@@ -365,6 +401,7 @@ def reconcile(
 def _diff_orders(
     recorded_orders: Sequence[Mapping[str, Any]],
     broker_orders: Sequence[Mapping[str, Any]],
+    authorized_client_order_ids: Sequence[str] = (),
 ) -> list[ReconcileDelta]:
     """Classify the order side of the diff.
 
@@ -384,11 +421,14 @@ def _diff_orders(
         if (ident := _order_identity(order)) is not None
     }
 
+    authorized = frozenset(str(value) for value in authorized_client_order_ids)
+    matched_broker_identities: set[str] = set()
     deltas: list[ReconcileDelta] = []
     for recorded in recorded_orders:
         identity = _order_identity(recorded)
         coid = _client_order_id(recorded)
         if identity is not None and identity in broker_by_id:
+            matched_broker_identities.add(identity)
             deltas.append(
                 ReconcileDelta(
                     kind=DeltaKind.MATCHED,
@@ -435,6 +475,38 @@ def _diff_orders(
                     broker=None,
                 )
             )
+    for broker_order in broker_orders:
+        identity = _order_identity(broker_order)
+        if identity is not None and identity in matched_broker_identities:
+            continue
+        client_order_id = _client_order_id(broker_order)
+        if client_order_id is not None and client_order_id in authorized:
+            deltas.append(
+                ReconcileDelta(
+                    kind=DeltaKind.MATCHED,
+                    subject="order",
+                    identity=identity or client_order_id,
+                    client_order_id=client_order_id,
+                    detail="broker open order matches an accepted idempotency-ledger entry",
+                    recorded=None,
+                    broker=dict(broker_order),
+                )
+            )
+            continue
+        deltas.append(
+            ReconcileDelta(
+                kind=DeltaKind.UNAUTHORIZED_ORDER,
+                subject="order",
+                identity=identity or "<unknown>",
+                client_order_id=client_order_id,
+                detail=(
+                    "broker reports an open order absent from durable runtime state "
+                    "and the accepted idempotency ledger; trading must halt"
+                ),
+                recorded=None,
+                broker=dict(broker_order),
+            )
+        )
     return deltas
 
 
@@ -512,38 +584,48 @@ def _state_path(broker: str) -> Path:
 def _load_state(broker: str) -> dict[str, Any] | None:
     """Load the durable last-known runtime state for ``broker``.
 
-    Loading is fail-open-to-cold-start: a missing file means a first/cold start
-    (``None``). A *corrupt* file is NOT silently treated as cold start — that
-    would hide a partial write — it is renamed aside and surfaced as a fresh
-    start so the diff can never run against a half-truth.
+    A missing file is a legitimate first/cold start. Any existing state that is
+    unreadable, insecurely permissioned, or structurally invalid raises
+    :class:`ReconcileStateError`; callers must halt and request manual recovery.
 
     Args:
         broker: Broker key.
 
     Returns:
-        The decoded state dict, or ``None`` on cold start / unreadable state.
+        The decoded state dict, or ``None`` only on a true cold start.
     """
     path = _state_path(broker)
-    if not path.is_file():
+    if path.is_symlink():
+        raise ReconcileStateError("runtime reconciliation state must not be a symlink")
+    if not path.exists():
         return None
+    if not path.is_file():
+        raise ReconcileStateError("runtime reconciliation state must be a regular file")
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ReconcileStateError(f"runtime reconciliation state cannot be inspected: {exc}") from exc
+    if hasattr(os, "getuid") and stat.st_uid != os.getuid():
+        raise ReconcileStateError("runtime reconciliation state has the wrong owner")
+    if stat.st_mode & 0o077:
+        raise ReconcileStateError("runtime reconciliation state permissions are not private")
+    if stat.st_size > _MAX_STATE_BYTES:
+        raise ReconcileStateError("runtime reconciliation state exceeds the safety size limit")
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        corrupt = path.with_name(f"{path.name}.corrupt-{int(datetime.now().timestamp())}")
-        try:
-            os.replace(path, corrupt)
-        except OSError:
-            pass
-        logger.warning(
-            "reconcile(%s): runtime_state.json unreadable (%s); renamed to %s, cold start",
-            broker,
-            exc,
-            corrupt.name,
-        )
-        return None
-    if not isinstance(raw, dict):
-        logger.warning("reconcile(%s): runtime_state.json is not an object; cold start", broker)
-        return None
+        raise ReconcileStateError("runtime reconciliation state is unreadable") from exc
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema_version") != RUNTIME_STATE_SCHEMA_VERSION
+        or raw.get("broker") != broker
+        or not isinstance(raw.get("open_orders"), list)
+        or not isinstance(raw.get("positions"), list)
+        or not isinstance(raw.get("balance"), dict)
+        or not all(isinstance(row, dict) for row in raw.get("open_orders", []))
+        or not all(isinstance(row, dict) for row in raw.get("positions", []))
+    ):
+        raise ReconcileStateError("runtime reconciliation state schema is invalid")
     return raw
 
 
@@ -578,11 +660,21 @@ def _persist_state(
     }
     path = _state_path(broker)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(encoded) > _MAX_STATE_BYTES:
+        raise ReconcileStateError("runtime reconciliation state exceeds the safety size limit")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        # Best-effort on platforms without POSIX perms (e.g. Windows).
-        pass
-    os.replace(tmp, path)
+        os.write(fd, encoded)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise

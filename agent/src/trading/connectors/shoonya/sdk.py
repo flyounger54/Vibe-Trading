@@ -398,6 +398,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
     exchange: str = "NSE",
     product_type: str = "I",
 ) -> dict[str, Any]:
@@ -463,6 +464,7 @@ def place_order(
         "exchange": exchange,
         "product_type": product_type,
         "brokerage": "₹0",
+        "client_order_id": client_order_id,
     }
 
 

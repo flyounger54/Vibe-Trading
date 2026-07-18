@@ -10,21 +10,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
-
 import pytest
 
 import src.live.paths as paths
 from src.live.halt import trip_halt
-from src.live.mandate.model import (
-    MANDATE_SCHEMA_VERSION,
-    AssetClass,
-    ConsentMeta,
-    HardCaps,
-    InstrumentType,
-    Mandate,
-    UniverseConstraint,
-)
+from src.live.mandate.model import MANDATE_SCHEMA_VERSION
 from src.live.order_guard import LiveOrderGuardTool
 from src.tools.mcp import MCPRemoteTool, MCPRemoteToolSpec
 
@@ -88,6 +78,12 @@ def _write_mandate(live_runtime: Path) -> None:
             "min_market_cap_usd": None,
             "min_avg_daily_volume_usd": None,
             "exclude_symbols": [],
+        },
+        "execution_controls": {
+            "max_daily_loss_usd": 100.0,
+            "max_price_deviation_bps": 50.0,
+            "max_quote_age_seconds": 15.0,
+            "max_clock_drift_seconds": 3.0,
         },
         "consent": {
             "created_at": created.isoformat(),

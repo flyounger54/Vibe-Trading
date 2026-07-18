@@ -121,6 +121,9 @@ class OrderIntent:
     quantity: float | None
     instrument_type: InstrumentType
     asset_class: AssetClass | None = None
+    client_order_id: str | None = None
+    order_type: str = "market"
+    limit_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -385,6 +388,7 @@ def check_mandate(
     broker: str,
     remote_tool: str,
     daily_count: int,
+    reserved_notional_usd: float = 0.0,
 ) -> BreachEvent | None:
     """Evaluate one order intent against the mandate (fail-closed).
 
@@ -479,8 +483,19 @@ def check_mandate(
             limit_value=caps.max_total_exposure_usd, attempted_value=0.0,
             detail="current positions could not be read (fail-closed)",
         )
+    try:
+        reserved = float(reserved_notional_usd)
+    except (TypeError, ValueError):
+        reserved = float("nan")
+    if reserved < 0 or reserved != reserved or reserved in (float("inf"), float("-inf")):
+        return _breach(
+            broker=broker, remote_tool=remote_tool, intent=intent,
+            kind=BREACH_KIND_QUANTITATIVE, limit="open_order_reservations_usd",
+            limit_value=caps.max_total_exposure_usd, attempted_value=0.0,
+            detail="open-order reservations could not be normalized (fail-closed)",
+        )
     signed = notional if intent.side == "buy" else -notional
-    post_exposure = current_exposure + signed
+    post_exposure = current_exposure + reserved + signed
     if post_exposure > caps.max_total_exposure_usd:
         return _breach(
             broker=broker, remote_tool=remote_tool, intent=intent,

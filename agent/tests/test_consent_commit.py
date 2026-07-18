@@ -281,6 +281,10 @@ def test_commit_rejects_profile_over_alias_keyed_order_ceiling(live_runtime: Pat
         "max_order_usd": 999_999.0,  # human/profile spelling
         "max_total_exposure_usd": 5000.0,
         "daily_trade_cap": 2,
+        "max_daily_loss_usd": 100.0,
+        "max_price_deviation_bps": 50.0,
+        "max_quote_age_seconds": 15.0,
+        "max_clock_drift_seconds": 3.0,
         "leverage": "none",
         "instruments": ["equity"],
     }
@@ -303,6 +307,47 @@ def test_commit_rejects_profile_over_alias_keyed_order_ceiling(live_runtime: Pat
             broker="robinhood",
         )
     # Fail-closed: no mandate written.
+    assert load_mandate("robinhood") is None
+
+
+def test_dynamic_broker_ceilings_do_not_erase_visible_execution_controls(
+    live_runtime: Path,
+) -> None:
+    """A fresh account snapshot overlays sizing but preserves proposal risk caps."""
+    profile = {
+        "ordinal": 1,
+        "label": "tampered",
+        "max_order_usd": 90.0,
+        "max_total_exposure_usd": 5000.0,
+        "daily_trade_cap": 2,
+        "max_daily_loss_usd": 500.0,
+        "max_price_deviation_bps": 50.0,
+        "max_quote_age_seconds": 15.0,
+        "max_clock_drift_seconds": 3.0,
+        "leverage": "none",
+        "instruments": ["equity"],
+    }
+    ceilings = {
+        "account_funding_usd": 5000.0,
+        "max_order_notional_usd": 100.0,
+        "max_total_exposure_usd": 5000.0,
+        "max_daily_loss_usd": 100.0,
+    }
+    proposal_id = _save_handcrafted_proposal("robinhood", profile, ceilings)
+
+    with pytest.raises(CommitError, match="exceeds the account ceilings"):
+        commit_mandate(
+            proposal_id=proposal_id,
+            ordinal=1,
+            adjustments=None,
+            consent_ack=True,
+            broker="robinhood",
+            ceilings_ref={
+                "account_funding_usd": 5000.0,
+                "max_order_notional_usd": 100.0,
+                "max_total_exposure_usd": 5000.0,
+            },
+        )
     assert load_mandate("robinhood") is None
 
 
@@ -346,6 +391,10 @@ def test_commit_accepts_within_alias_keyed_ceiling(live_runtime: Path) -> None:
         "max_order_usd": 90.0,
         "max_total_exposure_usd": 5000.0,
         "daily_trade_cap": 2,
+        "max_daily_loss_usd": 100.0,
+        "max_price_deviation_bps": 50.0,
+        "max_quote_age_seconds": 15.0,
+        "max_clock_drift_seconds": 3.0,
         "leverage": "none",
         "instruments": ["equity"],
     }

@@ -28,10 +28,13 @@ from src.live.mandate.commit import _normalize_limits, save_proposal
 #: profiles. Each is a fraction of the funded ceiling so they always clamp down.
 _PROFILE_TEMPLATES: tuple[dict[str, Any], ...] = (
     {"ordinal": 1, "label": "稳健", "order_fraction": 0.05, "daily_trade_cap": 2,
+     "daily_loss_fraction": 0.005, "price_deviation_bps": 25.0,
      "notes": "Smallest clips, fewest trades — capital-preservation tilt."},
     {"ordinal": 2, "label": "均衡", "order_fraction": 0.15, "daily_trade_cap": 5,
+     "daily_loss_fraction": 0.01, "price_deviation_bps": 50.0,
      "notes": "Moderate sizing, cash-only."},
     {"ordinal": 3, "label": "激进", "order_fraction": 0.30, "daily_trade_cap": 10,
+     "daily_loss_fraction": 0.02, "price_deviation_bps": 100.0,
      "notes": "Largest clips this account allows — still cash-only."},
 )
 
@@ -202,6 +205,10 @@ class ProposeMandateProfilesTool(BaseTool):
         ceil_daily = canon.get("max_trades_per_day")
         ceil_daily = int(ceil_daily) if ceil_daily is not None else None
         instruments = list(canon.get("allowed_instruments") or ["equity"])
+        ceil_daily_loss = canon.get("max_daily_loss_usd")
+        ceil_price_deviation = canon.get("max_price_deviation_bps")
+        ceil_quote_age = canon.get("max_quote_age_seconds")
+        ceil_clock_drift = canon.get("max_clock_drift_seconds")
         universe = ceilings.get("universe") or ["AAPL", "MSFT", "NVDA", "GOOGL"]
         # Leverage is always clamped to the ceiling; default cash-only.
         leverage = canon.get("leverage", "none")
@@ -223,6 +230,14 @@ class ProposeMandateProfilesTool(BaseTool):
             daily = tpl["daily_trade_cap"]
             if ceil_daily is not None:
                 daily = min(daily, ceil_daily)
+            daily_loss = round(funding * tpl["daily_loss_fraction"], 2)
+            if ceil_daily_loss is not None:
+                daily_loss = min(daily_loss, float(ceil_daily_loss))
+            price_deviation = float(tpl["price_deviation_bps"])
+            if ceil_price_deviation is not None:
+                price_deviation = min(price_deviation, float(ceil_price_deviation))
+            quote_age = min(15.0, float(ceil_quote_age)) if ceil_quote_age is not None else 15.0
+            clock_drift = min(3.0, float(ceil_clock_drift)) if ceil_clock_drift is not None else 3.0
             profile = {
                 "ordinal": tpl["ordinal"],
                 "label": tpl["label"],
@@ -230,6 +245,10 @@ class ProposeMandateProfilesTool(BaseTool):
                 "max_order_usd": max_order,
                 "max_total_exposure_usd": ceil_exposure,
                 "daily_trade_cap": daily,
+                "max_daily_loss_usd": daily_loss,
+                "max_price_deviation_bps": price_deviation,
+                "max_quote_age_seconds": quote_age,
+                "max_clock_drift_seconds": clock_drift,
                 "leverage": leverage,
                 "instruments": instruments,
                 "flatten_on_halt": flatten_on_halt,

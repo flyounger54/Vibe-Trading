@@ -279,6 +279,7 @@ def get_quote(symbol: str, *, config: AlpacaConfig | None = None, **_: Any) -> d
             "bid_size": _obj_get(quote, "bid_size"),
             "ask_size": _obj_get(quote, "ask_size"),
             "time": str(_obj_get(quote, "timestamp", "")),
+            "currency": "USD",
         },
     }
 
@@ -320,6 +321,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit an order to the configured Alpaca account.
 
@@ -405,6 +407,8 @@ def place_order(
         order_side = OrderSide.BUY if side_token == "buy" else OrderSide.SELL
         tif = TimeInForce.DAY if tif_token == "day" else TimeInForce.GTC
         amount = {"qty": qty_value} if has_qty else {"notional": notional_value}
+        if client_order_id:
+            amount["client_order_id"] = str(client_order_id)
 
         if type_token == "limit":
             req = LimitOrderRequest(
@@ -442,6 +446,7 @@ def place_order(
         "limit_price": limit_value,
         "order_status": str(_obj_get(order, "status", "")),
         "filled_qty": _obj_get(order, "filled_qty"),
+        "client_order_id": _obj_get(order, "client_order_id", client_order_id),
     }
 
 
@@ -609,6 +614,7 @@ def _order_to_dict(item: Any) -> dict[str, Any]:
         "limit_price": _obj_get(item, "limit_price"),
         "status": str(_obj_get(item, "status", "")),
         "submitted_at": str(_obj_get(item, "submitted_at", "")),
+        "client_order_id": _obj_get(item, "client_order_id"),
     }
 
 

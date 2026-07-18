@@ -93,6 +93,15 @@ def extract_order_intent(remote_name: str, kwargs: dict) -> OrderIntent | None:
     # allowed and surfaced — the gate reconciles to the larger enforced notional.
     if notional is None and quantity is None:
         return None
+    client_order_id = kwargs.get("client_order_id")
+    if not isinstance(client_order_id, str) or not client_order_id.strip():
+        return None
+    order_type = str(kwargs.get("order_type") or "market").strip().lower()
+    if order_type not in {"market", "limit"}:
+        return None
+    limit_price = _first_positive_float(kwargs, ("limit_price", "price"))
+    if order_type == "limit" and limit_price is None:
+        return None
 
     return OrderIntent(
         symbol=symbol,
@@ -100,6 +109,9 @@ def extract_order_intent(remote_name: str, kwargs: dict) -> OrderIntent | None:
         notional_usd=notional,
         quantity=quantity,
         instrument_type=instrument,
+        client_order_id=client_order_id.strip(),
+        order_type=order_type,
+        limit_price=limit_price,
     )
 
 

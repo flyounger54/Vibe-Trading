@@ -24,6 +24,7 @@ import pytest
 import importlib
 
 import src.live.paths as live_paths
+from src.live.mandate.model import MANDATE_SCHEMA_VERSION
 
 # ``cli/__init__.py`` re-exports the ``main`` *function* as ``cli.main``, which
 # shadows the submodule for attribute access. Import the module object directly
@@ -53,7 +54,12 @@ def live_root(tmp_path: Path):
         yield tmp_path
 
 
-def _write_mandate(root: Path, broker: str = "robinhood", *, schema_version: int = 1) -> Path:
+def _write_mandate(
+    root: Path,
+    broker: str = "robinhood",
+    *,
+    schema_version: int = MANDATE_SCHEMA_VERSION,
+) -> Path:
     """Write a structurally valid mandate.json under the patched root."""
     broker_dir = root / "live" / broker
     broker_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +78,12 @@ def _write_mandate(root: Path, broker: str = "robinhood", *, schema_version: int
             "min_market_cap_usd": None,
             "min_avg_daily_volume_usd": None,
             "exclude_symbols": [],
+        },
+        "execution_controls": {
+            "max_daily_loss_usd": 50.0,
+            "max_price_deviation_bps": 50.0,
+            "max_quote_age_seconds": 15.0,
+            "max_clock_drift_seconds": 3.0,
         },
         "consent": {
             "created_at": "2026-05-29T00:00:00+00:00",

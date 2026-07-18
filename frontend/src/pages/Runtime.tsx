@@ -321,6 +321,10 @@ function summarizeLimits(limits: LiveMandateLimits | undefined, t: TFunction): s
   if (typeof limits.max_order_notional_usd === "number") parts.push(`$${limits.max_order_notional_usd.toLocaleString()}${t("runtime.perOrder")}`);
   if (typeof limits.max_total_exposure_usd === "number") parts.push(`$${limits.max_total_exposure_usd.toLocaleString()} ${t("runtime.exposure")}`);
   if (typeof limits.max_trades_per_day === "number") parts.push(`${limits.max_trades_per_day}${t("runtime.perDay")}`);
+  if (typeof limits.max_daily_loss_usd === "number") parts.push(`${t("runtime.dailyLoss")} $${limits.max_daily_loss_usd.toLocaleString()}`);
+  if (typeof limits.max_price_deviation_bps === "number") parts.push(`±${limits.max_price_deviation_bps} bps`);
+  if (typeof limits.max_quote_age_seconds === "number") parts.push(`${t("runtime.quoteAge")} ≤${limits.max_quote_age_seconds}s`);
+  if (typeof limits.max_clock_drift_seconds === "number") parts.push(`${t("runtime.clockDrift")} ≤${limits.max_clock_drift_seconds}s`);
   if (typeof limits.max_leverage === "number") parts.push(`${limits.max_leverage}${t("runtime.leverageSuffix")}`);
   if (limits.allowed_instruments?.length) parts.push(limits.allowed_instruments.join(", "));
   return parts.join(" · ") || t("runtime.limitsUnavailable");

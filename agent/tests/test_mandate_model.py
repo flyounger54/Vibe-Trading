@@ -13,6 +13,7 @@ from src.live.mandate.model import (
     MANDATE_SCHEMA_VERSION,
     AssetClass,
     ConsentMeta,
+    ExecutionControls,
     HardCaps,
     InstrumentType,
     Mandate,
@@ -53,6 +54,12 @@ def _sample_mandate(expires_at: str, *, flatten_on_halt: bool = False) -> Mandat
             account_ref="rh_acct_opaque",
             expires_at=expires_at,
         ),
+        execution_controls=ExecutionControls(
+            max_daily_loss_usd=100.0,
+            max_price_deviation_bps=50.0,
+            max_quote_age_seconds=15.0,
+            max_clock_drift_seconds=3.0,
+        ),
     )
 
 
@@ -61,6 +68,8 @@ def _write_mandate(broker_path: Path, mandate: Mandate) -> None:
     caps = mandate.hard_caps
     universe = mandate.universe
     consent = mandate.consent
+    execution = mandate.execution_controls
+    assert execution is not None
     payload = {
         "schema_version": mandate.schema_version,
         "flatten_on_halt": mandate.flatten_on_halt,
@@ -77,6 +86,12 @@ def _write_mandate(broker_path: Path, mandate: Mandate) -> None:
             "min_market_cap_usd": universe.min_market_cap_usd,
             "min_avg_daily_volume_usd": universe.min_avg_daily_volume_usd,
             "exclude_symbols": list(universe.exclude_symbols),
+        },
+        "execution_controls": {
+            "max_daily_loss_usd": execution.max_daily_loss_usd,
+            "max_price_deviation_bps": execution.max_price_deviation_bps,
+            "max_quote_age_seconds": execution.max_quote_age_seconds,
+            "max_clock_drift_seconds": execution.max_clock_drift_seconds,
         },
         "consent": {
             "created_at": consent.created_at,

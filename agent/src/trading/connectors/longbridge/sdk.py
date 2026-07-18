@@ -357,6 +357,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     """Place a PAPER-ONLY stock order via the Longbridge ``TradeContext``.
 
@@ -453,6 +454,8 @@ def place_order(
         }
         if type_key == "limit":
             kwargs["submitted_price"] = Decimal(str(px))
+        if client_order_id:
+            kwargs["remark"] = str(client_order_id)
 
         trade = _trade_context(config)
         response = _call(trade, "submit_order", **kwargs)
@@ -474,6 +477,7 @@ def place_order(
         "quantity": qty,
         "limit_price": px,
         "time_in_force": tif_key,
+        "client_order_id": client_order_id,
     }
 
 
@@ -696,6 +700,7 @@ def _order_to_dict(item: Any) -> dict[str, Any]:
         "status": str(_first(item, ("status",), "")),
         "currency": _first(item, ("currency",)),
         "submitted_at": str(_first(item, ("submitted_at",), "")),
+        "client_order_id": _first(item, ("remark",)),
     }
 
 
@@ -721,6 +726,7 @@ def _quote_to_dict(item: Any) -> dict[str, Any]:
         "volume": _first(item, ("volume",)),
         "turnover": _first(item, ("turnover",)),
         "time": str(_first(item, ("timestamp",), "")),
+        "currency": _first(item, ("currency",)),
     }
 
 

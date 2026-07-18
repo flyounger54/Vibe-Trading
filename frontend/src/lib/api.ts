@@ -730,6 +730,10 @@ export interface MandateProfile {
   universe: string[] | string;
   max_order_usd: number;
   daily_trade_cap: number;
+  max_daily_loss_usd: number;
+  max_price_deviation_bps: number;
+  max_quote_age_seconds: number;
+  max_clock_drift_seconds: number;
   /** "none" for cash-only, otherwise a leverage descriptor/multiple. */
   leverage: string | number;
   instruments: string[];
@@ -768,6 +772,10 @@ export interface MandateCommitted {
   /** Resolved limits, surfaced for the compact active-mandate badge. */
   max_order_usd?: number;
   daily_trade_cap?: number;
+  max_daily_loss_usd?: number;
+  max_price_deviation_bps?: number;
+  max_quote_age_seconds?: number;
+  max_clock_drift_seconds?: number;
   expires_at?: string;
 }
 
@@ -807,10 +815,15 @@ export interface CommitMandateRequest {
 export interface CommitMandateResponse {
   mandate_id: string;
   consent_record_id: string;
+  proposal_id?: string;
   selected_ordinal?: number;
   broker?: string;
   max_order_usd?: number;
   daily_trade_cap?: number;
+  max_daily_loss_usd?: number;
+  max_price_deviation_bps?: number;
+  max_quote_age_seconds?: number;
+  max_clock_drift_seconds?: number;
   expires_at?: string;
 }
 
@@ -841,6 +854,10 @@ export interface LiveMandateLimits {
   max_trades_per_day?: number;
   allowed_instruments?: string[];
   account_funding_usd?: number;
+  max_daily_loss_usd?: number;
+  max_price_deviation_bps?: number;
+  max_quote_age_seconds?: number;
+  max_clock_drift_seconds?: number;
   [key: string]: unknown;
 }
 

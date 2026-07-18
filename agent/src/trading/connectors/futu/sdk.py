@@ -401,6 +401,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     """Place a Futu order through the local OpenD gateway.
 
@@ -488,7 +489,7 @@ def place_order(
         ftu_order_type = (
             futu.OrderType.MARKET if order_kind == "market" else futu.OrderType.NORMAL
         )
-        ret, data = trade_ctx.place_order(
+        request = dict(
             price=price,
             qty=qty_int,
             code=code,
@@ -497,6 +498,9 @@ def place_order(
             trd_env=trd_env,
             acc_id=acc_id,
         )
+        if client_order_id:
+            request["remark"] = str(client_order_id)
+        ret, data = trade_ctx.place_order(**request)
         if ret != getattr(futu, "RET_OK", 0):
             return _order_error(cfg, f"Futu place_order rejected the order: {data}")
 
@@ -517,6 +521,7 @@ def place_order(
             "quantity": qty_int,
             "limit_price": price if order_kind == "limit" else None,
             "time_in_force": str(time_in_force or "day"),
+            "client_order_id": client_order_id,
         }
     except FutuProfileMismatchError as exc:
         return _order_error(cfg, str(exc))
@@ -868,6 +873,7 @@ def _order_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
         "dealt_qty": _first(row, ("dealt_qty",)),
         "dealt_avg_price": _first(row, ("dealt_avg_price",)),
         "create_time": str(_first(row, ("create_time",), "")),
+        "client_order_id": _first(row, ("remark",)),
     }
 
 
@@ -895,6 +901,7 @@ def _quote_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
         "ask": _first(row, ("ask_price",)),
         "bid": _first(row, ("bid_price",)),
         "time": str(_first(row, ("update_time",), "")),
+        "currency": _first(row, ("currency",)),
     }
 
 

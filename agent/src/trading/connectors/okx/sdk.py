@@ -305,6 +305,8 @@ def get_quote(symbol: str, *, config: OKXConfig | None = None, **_: Any) -> dict
     resp = _safe_call(market, "get_ticker", instId=clean)
     rows = _extract_data(resp)
     payload = _quote_to_dict(rows[0]) if rows else {}
+    if "-" in clean:
+        payload["currency"] = clean.rsplit("-", 1)[-1]
     return {
         "status": "ok",
         "profile": cfg.profile,
@@ -363,6 +365,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | str | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     """Place a spot order on the configured OKX account.
 
@@ -432,6 +435,8 @@ def place_order(
         "side": clean_side,
         "ordType": clean_type,
     }
+    if client_order_id:
+        params["clOrdId"] = str(client_order_id)
     if has_qty:
         params["sz"] = str(quantity)
     else:
@@ -461,6 +466,7 @@ def place_order(
         side=clean_side,
         order_type=clean_type,
         time_in_force=str(time_in_force or "").strip().lower(),
+        client_order_id=str(client_order_id) if client_order_id else None,
     )
 
 

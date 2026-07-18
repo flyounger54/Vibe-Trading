@@ -370,6 +370,7 @@ def get_quote(symbol: str, *, config: BinanceConfig | None = None, **_: Any) -> 
             "low": _obj_get(ticker, "low"),
             "volume": _obj_get(ticker, "baseVolume"),
             "time": str(_obj_get(ticker, "timestamp", "")),
+            "currency": clean.rsplit("/", 1)[-1] if "/" in clean else None,
         },
     }
 
@@ -421,6 +422,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     """Place a spot order on Binance via ccxt's unified ``create_order``.
 
@@ -498,6 +500,8 @@ def place_order(
         return {"status": "error", "error": f"could not resolve a valid trading pair from symbol '{symbol}'."}
 
     params: dict[str, Any] = {}
+    if client_order_id:
+        params["newClientOrderId"] = str(client_order_id)
     if type_clean == "limit":
         tif = _TIME_IN_FORCE_MAP.get(str(time_in_force or "").strip().lower())
         if tif is None:
@@ -535,6 +539,7 @@ def place_order(
         "filled": _obj_get(order, "filled"),
         "amount": _obj_get(order, "amount"),
         "price": _obj_get(order, "price"),
+        "client_order_id": _obj_get(order, "clientOrderId", client_order_id),
     }
 
 
@@ -742,6 +747,7 @@ def _order_to_dict(item: Any) -> dict[str, Any]:
         "remaining": _obj_get(item, "remaining"),
         "status": str(_obj_get(item, "status", "")),
         "time": str(_obj_get(item, "timestamp", "")),
+        "client_order_id": _obj_get(item, "clientOrderId"),
     }
 
 

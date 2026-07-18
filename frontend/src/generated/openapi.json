@@ -1955,12 +1955,28 @@
             "title": "Allowed Instruments",
             "type": "array"
           },
+          "max_clock_drift_seconds": {
+            "title": "Max Clock Drift Seconds",
+            "type": "number"
+          },
+          "max_daily_loss_usd": {
+            "title": "Max Daily Loss Usd",
+            "type": "number"
+          },
           "max_leverage": {
             "title": "Max Leverage",
             "type": "number"
           },
           "max_order_notional_usd": {
             "title": "Max Order Notional Usd",
+            "type": "number"
+          },
+          "max_price_deviation_bps": {
+            "title": "Max Price Deviation Bps",
+            "type": "number"
+          },
+          "max_quote_age_seconds": {
+            "title": "Max Quote Age Seconds",
             "type": "number"
           },
           "max_total_exposure_usd": {
@@ -1978,7 +1994,11 @@
           "max_leverage",
           "max_trades_per_day",
           "allowed_instruments",
-          "account_funding_usd"
+          "account_funding_usd",
+          "max_daily_loss_usd",
+          "max_price_deviation_bps",
+          "max_quote_age_seconds",
+          "max_clock_drift_seconds"
         ],
         "title": "MandateLimits",
         "type": "object"

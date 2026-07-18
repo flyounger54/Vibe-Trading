@@ -244,6 +244,7 @@ def place_order(
     order_type: str = "market",
     limit_price: float | None = None,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
     session_id: str = "",
     **overrides: Any,
 ) -> dict[str, Any]:
@@ -271,12 +272,10 @@ def place_order(
         "time_in_force": time_in_force,
     }
 
-    if profile.environment == "paper":
-        return _with_profile(profile, module.place_order(config, **place_kwargs))
-
-    # Live: pre-trade mandate gate.
+    # Paper and live share the same broker-agnostic economic intent.  Their
+    # executors differ only where real-money qualification/audit is required.
     from src.live.enforcement import OrderIntent
-    from src.live.sdk_order_gate import execute_live_order
+    from src.live.sdk_order_gate import execute_live_order, execute_paper_order
 
     instrument_type, asset_class = _order_classification(profile.connector, symbol)
     intent = OrderIntent(
@@ -286,7 +285,22 @@ def place_order(
         quantity=float(quantity) if quantity is not None else None,
         instrument_type=instrument_type,
         asset_class=asset_class,
+        client_order_id=str(client_order_id or "").strip() or None,
+        order_type=str(order_type or "").strip().lower(),
+        limit_price=float(limit_price) if limit_price is not None else None,
     )
+    if profile.environment == "paper":
+        result = execute_paper_order(
+            broker=profile.connector,
+            profile_id=profile.id,
+            connector_module=module,
+            config=config,
+            intent=intent,
+            place_kwargs=place_kwargs,
+        )
+        return _with_profile(profile, result)
+
+    # Live: pre-trade mandate + qualification gate.
     result = execute_live_order(
         broker=profile.connector,
         connector_module=module,
@@ -318,20 +332,59 @@ def cancel_order(
         return _unsupported(profile, "orders.cancel")
     module = _sdk_module(profile.connector)
     config = module.build_config(profile.config, overrides)
-    result = module.cancel_order(config, order_id, symbol=symbol)
     if profile.environment == "live":
-        _audit_live_cancel(profile, order_id, symbol, result, session_id)
+        _audit_live_cancel(
+            profile,
+            order_id,
+            symbol,
+            None,
+            session_id,
+            kind="cancel_requested",
+        )
+    try:
+        result = module.cancel_order(config, order_id, symbol=symbol)
+    except Exception as exc:
+        if profile.environment == "live":
+            _audit_live_cancel(
+                profile,
+                order_id,
+                symbol,
+                {"status": "error", "error": str(exc)},
+                session_id,
+                kind="order_cancelled",
+            )
+        raise
+    if profile.environment == "live":
+        _audit_live_cancel(
+            profile,
+            order_id,
+            symbol,
+            result,
+            session_id,
+            kind="order_cancelled",
+        )
     return _with_profile(profile, result)
 
 
-def _audit_live_cancel(profile, order_id, symbol, result, session_id) -> None:
-    """Write a live-action audit record for a live order cancellation (best-effort)."""
+def _audit_live_cancel(
+    profile,
+    order_id,
+    symbol,
+    result,
+    session_id,
+    *,
+    kind,
+) -> None:
+    """Write one pre/post live cancellation record without blocking de-risking."""
     try:
         from src.live.audit import LiveActionEvent, write_live_action
 
-        ok = isinstance(result, dict) and str(result.get("status", "")).lower() == "ok"
+        requested = kind == "cancel_requested"
+        ok = requested or (
+            isinstance(result, dict) and str(result.get("status", "")).lower() == "ok"
+        )
         event = LiveActionEvent(
-            kind="order_cancelled",
+            kind=kind,
             session_id=session_id,
             outcome="accepted" if ok else "error",
             server=profile.connector,
@@ -340,8 +393,12 @@ def _audit_live_cancel(profile, order_id, symbol, result, session_id) -> None:
             mandate_snapshot_ref=None,
             consent_record_ref=None,
             broker_request={"order_id": order_id, "symbol": symbol},
-            broker_response=result if isinstance(result, dict) else {"raw": result},
-            gate_decision={"allowed": True, "decision": "cancel"},
+            broker_response=(result if isinstance(result, dict) else None),
+            gate_decision={
+                "allowed": True,
+                "decision": "cancel",
+                "phase": "pre_write" if requested else "post_write",
+            },
             error=None if ok else (result.get("error") if isinstance(result, dict) else "cancel failed"),
         )
         try:

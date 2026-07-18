@@ -9,6 +9,7 @@ floors are exercised by monkeypatching the loader-backed helpers (no network).
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -29,11 +30,13 @@ from src.live.mandate.model import (
     MANDATE_SCHEMA_VERSION,
     AssetClass,
     ConsentMeta,
+    ExecutionControls,
     HardCaps,
     InstrumentType,
     Mandate,
     UniverseConstraint,
 )
+from src.live.order_ledger import OrderLedgerError
 from src.live.qualification import QualificationDecision, QualificationState
 from src.tools.mcp import MCPRemoteToolSpec
 
@@ -65,7 +68,24 @@ class _MockAdapter:
         if remote_name in ("get_positions", "list_positions"):
             return {"positions": self._positions, "status": "ok"}
         if remote_name in ("get_account", "get_balance", "get_buying_power"):
-            return {"equity": self._balance, "status": "ok"}
+            return {
+                "account": {"equity": self._balance, "currency": "USD"},
+                "status": "ok",
+            }
+        if remote_name in ("list_orders", "get_orders"):
+            return {"open_orders": [], "status": "ok"}
+        if remote_name in ("get_quotes", "get_quote"):
+            return {
+                "status": "ok",
+                "quotes": [{
+                    "symbol": arguments.get("symbol") or "AAPL",
+                    "bid": 100.0,
+                    "ask": 100.0,
+                    "last": 100.0,
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "currency": "USD",
+                }],
+            }
         # The order placement itself (super().execute forwards here).
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
         return {"status": "ok", "order_id": "rh_test_1", "state": "accepted"}
@@ -118,6 +138,12 @@ def _mandate(expires_in_days: int = 30, **caps_overrides: Any) -> Mandate:
             account_ref="acct_ref_xyz",
             expires_at=(created + timedelta(days=expires_in_days)).isoformat(),
         ),
+        execution_controls=ExecutionControls(
+            max_daily_loss_usd=500.0,
+            max_price_deviation_bps=100.0,
+            max_quote_age_seconds=30.0,
+            max_clock_drift_seconds=5.0,
+        ),
     )
 
 
@@ -139,6 +165,12 @@ def _write_mandate(live_runtime: Path, mandate: Mandate) -> None:
             "min_market_cap_usd": mandate.universe.min_market_cap_usd,
             "min_avg_daily_volume_usd": mandate.universe.min_avg_daily_volume_usd,
             "exclude_symbols": list(mandate.universe.exclude_symbols),
+        },
+        "execution_controls": {
+            "max_daily_loss_usd": mandate.execution_controls.max_daily_loss_usd,
+            "max_price_deviation_bps": mandate.execution_controls.max_price_deviation_bps,
+            "max_quote_age_seconds": mandate.execution_controls.max_quote_age_seconds,
+            "max_clock_drift_seconds": mandate.execution_controls.max_clock_drift_seconds,
         },
         "consent": {
             "created_at": mandate.consent.created_at,
@@ -182,6 +214,21 @@ def _check(intent: OrderIntent, mandate: Mandate, *, positions=None, daily_count
 
 def test_in_mandate_order_passes() -> None:
     assert _check(_intent(notional_usd=100.0), _mandate()) is None
+
+
+def test_open_order_reservations_count_toward_total_exposure() -> None:
+    breach = check_mandate(
+        _mandate(),
+        _intent(notional_usd=200.0),
+        [{"market_value": 4500.0}],
+        {"equity": 5000.0},
+        broker="robinhood",
+        remote_tool="place_order",
+        daily_count=0,
+        reserved_notional_usd=400.0,
+    )
+    assert breach is not None
+    assert breach.limit == "max_total_exposure_usd"
 
 
 @pytest.mark.parametrize(
@@ -285,17 +332,70 @@ def _guard(adapter, **kwargs):
     return order_guard.LiveOrderGuardTool(adapter, _spec(), broker="robinhood", session_id="s1", **kwargs)
 
 
+def _execute(guard, **kwargs):
+    kwargs.setdefault("client_order_id", f"vt_test_{uuid.uuid4().hex}")
+    kwargs.setdefault("order_type", "market")
+    return guard.execute(**kwargs)
+
+
 def test_guard_forwards_in_mandate_order(live_runtime: Path) -> None:
     _write_mandate(live_runtime, _mandate())
     adapter = _MockAdapter(positions=[], balance=5000.0)
     guard = _guard(adapter)
-    out = json.loads(guard.execute(symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0))
+    out = json.loads(_execute(guard, symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0))
     assert out.get("status") == "ok"
     assert out.get("order_id") == "rh_test_1"
     assert len(adapter.order_calls) == 1
     # Daily counter incremented exactly once on confirmed forward.
     counter = json.loads((live_runtime / "live" / "robinhood" / "trade_counter.json").read_text())
     assert counter["count"] == 1
+
+
+def test_guard_replays_same_client_order_id_without_second_broker_write(
+    live_runtime: Path,
+) -> None:
+    _write_mandate(live_runtime, _mandate())
+    adapter = _MockAdapter(positions=[], balance=5000.0)
+    guard = _guard(adapter)
+    args = {
+        "symbol": "AAPL",
+        "side": "buy",
+        "instrument_type": "equity",
+        "notional_usd": 100.0,
+        "client_order_id": "vt_remote_replay_0001",
+        "order_type": "market",
+    }
+
+    first = json.loads(guard.execute(**args))
+    replay = json.loads(guard.execute(**args))
+
+    assert first["status"] == "ok"
+    assert replay["idempotency_replayed"] is True
+    assert len(adapter.order_calls) == 1
+
+
+def test_guard_blocks_before_broker_when_prewrite_audit_fails(
+    live_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_mandate(live_runtime, _mandate())
+    adapter = _MockAdapter(positions=[], balance=5000.0)
+    guard = _guard(adapter)
+    monkeypatch.setattr(order_guard, "_record_live_action", lambda event: None)
+
+    out = json.loads(
+        guard.execute(
+            symbol="AAPL",
+            side="buy",
+            instrument_type="equity",
+            notional_usd=100.0,
+            client_order_id="vt_audit_fail_0001",
+            order_type="market",
+        )
+    )
+
+    assert out["status"] == "blocked"
+    assert "audit unavailable" in out["reason"]
+    assert adapter.order_calls == []
 
 
 def test_guard_defaults_closed_without_qualification_selection(
@@ -309,7 +409,7 @@ def test_guard_defaults_closed_without_qualification_selection(
     )
 
     out = json.loads(
-        guard.execute(
+        _execute(guard,
             symbol="AAPL",
             side="buy",
             instrument_type="equity",
@@ -327,7 +427,7 @@ def test_guard_blocks_over_notional_with_breach(live_runtime: Path) -> None:
     _write_mandate(live_runtime, _mandate())
     adapter = _MockAdapter(positions=[], balance=5000.0)
     guard = _guard(adapter)
-    out = json.loads(guard.execute(symbol="AAPL", side="buy", instrument_type="equity", notional_usd=5000.0))
+    out = json.loads(_execute(guard, symbol="AAPL", side="buy", instrument_type="equity", notional_usd=5000.0))
     assert out["status"] == "blocked"
     assert out["decision"] == "pause_for_reauth"
     assert out["requires_reauthorization"] is True
@@ -339,7 +439,7 @@ def test_guard_structural_breach_denies_no_reauth(live_runtime: Path) -> None:
     _write_mandate(live_runtime, _mandate())
     adapter = _MockAdapter(positions=[], balance=5000.0)
     guard = _guard(adapter)
-    out = json.loads(guard.execute(symbol="GME", side="buy", instrument_type="equity", notional_usd=100.0))
+    out = json.loads(_execute(guard, symbol="GME", side="buy", instrument_type="equity", notional_usd=100.0))
     assert out["status"] == "blocked"
     assert out["decision"] == "deny"
     assert out["requires_reauthorization"] is False
@@ -350,7 +450,7 @@ def test_guard_structural_breach_denies_no_reauth(live_runtime: Path) -> None:
 def test_guard_no_mandate_denies(live_runtime: Path) -> None:
     adapter = _MockAdapter(positions=[], balance=5000.0)
     guard = _guard(adapter)
-    out = json.loads(guard.execute(symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0))
+    out = json.loads(_execute(guard, symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0))
     assert out["status"] == "blocked"
     assert out["decision"] == "deny"
     assert adapter.order_calls == []
@@ -360,7 +460,7 @@ def test_guard_expired_mandate_denies_with_reauth(live_runtime: Path) -> None:
     _write_mandate(live_runtime, _mandate(expires_in_days=-1))
     adapter = _MockAdapter(positions=[], balance=5000.0)
     guard = _guard(adapter)
-    out = json.loads(guard.execute(symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0))
+    out = json.loads(_execute(guard, symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0))
     assert out["status"] == "blocked"
     assert out["requires_reauthorization"] is True
     assert adapter.order_calls == []
@@ -371,7 +471,7 @@ def test_guard_unparseable_intent_denies(live_runtime: Path) -> None:
     adapter = _MockAdapter(positions=[], balance=5000.0)
     guard = _guard(adapter)
     # Missing side → extractor returns None → DENY.
-    out = json.loads(guard.execute(symbol="AAPL", instrument_type="equity", notional_usd=100.0))
+    out = json.loads(_execute(guard, symbol="AAPL", instrument_type="equity", notional_usd=100.0))
     assert out["status"] == "blocked"
     assert adapter.order_calls == []
 
@@ -401,7 +501,18 @@ class _FailingForwardAdapter:
         if remote_name == "get_positions":
             return {"positions": [], "status": "ok"}
         if remote_name == "get_account":
-            return {"equity": 5000.0, "status": "ok"}
+            return {"account": {"equity": 5000.0, "currency": "USD"}, "status": "ok"}
+        if remote_name == "list_orders":
+            return {"open_orders": [], "status": "ok"}
+        if remote_name == "get_quotes":
+            return {
+                "status": "ok",
+                "quotes": [{
+                    "symbol": "AAPL", "bid": 100.0, "ask": 100.0,
+                    "last": 100.0, "currency": "USD",
+                    "time": datetime.now(timezone.utc).isoformat(),
+                }],
+            }
         # The order placement fails at the broker.
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
         return {"status": "error", "error": "broker rejected", "error_type": "BrokerError"}
@@ -422,7 +533,7 @@ def test_failed_forward_does_not_consume_count_or_audit_accepted(live_runtime: P
     guard = _guard(adapter)
 
     out = json.loads(
-        guard.execute(symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0)
+        _execute(guard, symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0)
     )
 
     # The order WAS forwarded (it passed the gate) but the broker errored.
@@ -433,9 +544,11 @@ def test_failed_forward_does_not_consume_count_or_audit_accepted(live_runtime: P
     counter_path = live_runtime / "live" / "robinhood" / "trade_counter.json"
     assert not counter_path.is_file()
 
-    # No "accepted" record; exactly one error record instead.
+    # The pre-write intent is accepted into the audit ledger, but no accepted
+    # order_placed record exists; the broker outcome is exactly one error.
     records = _read_audit_records(live_runtime)
-    assert all(r["outcome"] != "accepted" for r in records)
+    submitted = [r for r in records if r["kind"] == "order_submitted"]
+    assert len(submitted) == 1 and submitted[0]["outcome"] == "accepted"
     accepted = [r for r in records if r["kind"] == "order_placed"]
     assert accepted == []
     errored = [r for r in records if r["outcome"] == "error"]
@@ -451,7 +564,7 @@ def test_successful_forward_consumes_count_and_audits_accepted(live_runtime: Pat
     guard = _guard(adapter)
 
     out = json.loads(
-        guard.execute(symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0)
+        _execute(guard, symbol="AAPL", side="buy", instrument_type="equity", notional_usd=100.0)
     )
     assert out.get("status") == "ok"
     counter = json.loads((live_runtime / "live" / "robinhood" / "trade_counter.json").read_text())
@@ -460,6 +573,37 @@ def test_successful_forward_consumes_count_and_audits_accepted(live_runtime: Pat
     assert len(accepted) == 1
     # H5: the redacted audit record is embedded under the frozen marker key.
     assert out[order_guard.LIVE_ACTION_RESULT_KEY]["kind"] == "order_placed"
+
+
+def test_post_write_ledger_failure_halts_and_is_returned(
+    live_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broker write followed by ledger failure is surfaced and freezes trading."""
+    from src.live.halt import halt_flag_set
+
+    _write_mandate(live_runtime, _mandate())
+    adapter = _MockAdapter(positions=[], balance=5000.0)
+    guard = _guard(adapter)
+
+    def fail_completion(*args, **kwargs):
+        raise OrderLedgerError("disk unavailable")
+
+    monkeypatch.setattr(order_guard, "complete_order", fail_completion)
+    out = json.loads(
+        _execute(
+            guard,
+            symbol="AAPL",
+            side="buy",
+            instrument_type="equity",
+            notional_usd=100.0,
+        )
+    )
+
+    assert len(adapter.order_calls) == 1
+    assert out["safety_halt"] is True
+    assert "disk unavailable" in out["ledger_error"]
+    assert halt_flag_set("robinhood") is True
 
 
 # --------------------------------------------------------------------------- #
@@ -482,10 +626,20 @@ class _QuoteAdapter:
         if remote_name == "get_positions":
             return {"positions": self._positions, "status": "ok"}
         if remote_name == "get_account":
-            return {"equity": self._balance, "status": "ok"}
+            return {"account": {"equity": self._balance, "currency": "USD"}, "status": "ok"}
+        if remote_name == "list_orders":
+            return {"open_orders": [], "status": "ok"}
         if remote_name == "get_quotes":
             self.quote_calls.append({"arguments": arguments})
-            return {"status": "ok", "symbol": arguments.get("symbol"), "price": self._price}
+            return {
+                "status": "ok",
+                "symbol": arguments.get("symbol"),
+                "bid": self._price,
+                "ask": self._price,
+                "last": self._price,
+                "time": datetime.now(timezone.utc).isoformat(),
+                "currency": "USD",
+            }
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
         return {"status": "ok", "order_id": "rh_test_1", "state": "accepted"}
 
@@ -500,7 +654,7 @@ def test_notional_quantity_bypass_is_closed(live_runtime: Path) -> None:
     guard = _guard(adapter)
 
     out = json.loads(
-        guard.execute(
+        _execute(guard,
             symbol="AAPL", side="buy", instrument_type="equity",
             notional_usd=10.0, quantity=100000.0,
         )

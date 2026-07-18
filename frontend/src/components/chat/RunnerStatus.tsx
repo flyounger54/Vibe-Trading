@@ -72,6 +72,10 @@ function summarizeLimits(limits: LiveMandateLimits | undefined): string {
   const parts: string[] = [];
   if (limits.max_order_notional_usd != null) parts.push(`≤${formatUsd(limits.max_order_notional_usd)}/order`);
   if (limits.max_trades_per_day != null) parts.push(`${limits.max_trades_per_day}/day`);
+  if (limits.max_daily_loss_usd != null) parts.push(`loss ≤${formatUsd(limits.max_daily_loss_usd)}/day`);
+  if (limits.max_price_deviation_bps != null) parts.push(`±${limits.max_price_deviation_bps} bps`);
+  if (limits.max_quote_age_seconds != null) parts.push(`quote ≤${limits.max_quote_age_seconds}s`);
+  if (limits.max_clock_drift_seconds != null) parts.push(`clock ≤${limits.max_clock_drift_seconds}s`);
   if (limits.max_leverage != null) parts.push(limits.max_leverage <= 1 ? "no leverage" : `${limits.max_leverage}×`);
   return parts.join(" · ");
 }

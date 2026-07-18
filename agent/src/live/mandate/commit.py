@@ -72,6 +72,11 @@ _CEILING_ALIASES: dict[str, str] = {
     # instrument whitelist
     "instruments": "allowed_instruments",
     "allowed_instruments": "allowed_instruments",
+    # Node 12B execution controls
+    "max_daily_loss_usd": "max_daily_loss_usd",
+    "max_price_deviation_bps": "max_price_deviation_bps",
+    "max_quote_age_seconds": "max_quote_age_seconds",
+    "max_clock_drift_seconds": "max_clock_drift_seconds",
 }
 
 
@@ -373,7 +378,14 @@ def commit_mandate(
 
     resolved = _resolve_profile(proposal, ordinal, adjustments)
 
-    ceilings = dict(ceilings_ref) if ceilings_ref is not None else dict(proposal.get("ceilings") or {})
+    # A fresh broker snapshot may tighten account-derived sizing at commit time,
+    # but brokers do not know the execution-risk collar the user saw. Preserve
+    # every stored proposal ceiling and overlay only the fields the broker can
+    # refresh, so dynamic account data cannot accidentally erase daily-loss,
+    # price, quote-age, or clock-drift bounds from this final authorization check.
+    ceilings = dict(proposal.get("ceilings") or {})
+    if ceilings_ref is not None:
+        ceilings.update(dict(ceilings_ref))
     if ceilings and not _profile_fits_ceilings(resolved, ceilings):
         raise CommitError("resolved profile exceeds the account ceilings — refusing to commit")
 
@@ -402,6 +414,7 @@ def commit_mandate(
         "mandate_id": mandate_id,
         "hard_caps": _profile_to_hard_caps(resolved),
         "universe": _profile_to_universe(resolved),
+        "execution_controls": _profile_to_execution_controls(resolved),
         # Top-level halt-behavior policy (not a quantitative ceiling): read by
         # the read-only loader onto Mandate.flatten_on_halt; absent => False.
         "flatten_on_halt": do_flatten_on_halt,
@@ -497,3 +510,20 @@ def _profile_to_universe(profile: Mapping[str, Any]) -> dict[str, Any]:
         "min_avg_daily_volume_usd": profile.get("min_avg_daily_volume_usd"),
         "exclude_symbols": list(profile.get("exclude_symbols") or []),
     }
+
+
+def _profile_to_execution_controls(profile: Mapping[str, Any]) -> dict[str, float]:
+    """Map the visible Node 12B risk collar into mandate schema v2."""
+    controls = {
+        "max_daily_loss_usd": float(profile.get("max_daily_loss_usd", 0.0) or 0.0),
+        "max_price_deviation_bps": float(
+            profile.get("max_price_deviation_bps", 0.0) or 0.0
+        ),
+        "max_quote_age_seconds": float(profile.get("max_quote_age_seconds", 0.0) or 0.0),
+        "max_clock_drift_seconds": float(
+            profile.get("max_clock_drift_seconds", 0.0) or 0.0
+        ),
+    }
+    if any(value <= 0 or value != value for value in controls.values()):
+        raise CommitError("resolved profile is missing valid Node 12B execution controls")
+    return controls

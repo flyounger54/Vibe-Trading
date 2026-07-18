@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-MANDATE_SCHEMA_VERSION = 1
+MANDATE_SCHEMA_VERSION = 2
 
 
 class InstrumentType(str, Enum):
@@ -110,6 +110,21 @@ class ConsentMeta:
 
 
 @dataclass(frozen=True)
+class ExecutionControls:
+    """Node 12B market-integrity and loss ceilings.
+
+    All values are explicit user-authorized limits persisted in mandate schema
+    v2.  Missing controls make a mandate structurally invalid; the execution
+    gates never invent wider defaults for real-money orders.
+    """
+
+    max_daily_loss_usd: float
+    max_price_deviation_bps: float
+    max_quote_age_seconds: float
+    max_clock_drift_seconds: float
+
+
+@dataclass(frozen=True)
 class Mandate:
     """Immutable bounded-autonomy mandate for one live broker channel.
 
@@ -135,4 +150,5 @@ class Mandate:
     hard_caps: HardCaps
     universe: UniverseConstraint
     consent: ConsentMeta
+    execution_controls: ExecutionControls | None = None
     flatten_on_halt: bool = False

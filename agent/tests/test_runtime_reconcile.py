@@ -22,6 +22,7 @@ import src.live.paths as paths
 from src.live.runtime.reconcile import (
     DeltaKind,
     ReconcileReport,
+    ReconcileStateError,
     reconcile,
 )
 
@@ -67,6 +68,7 @@ def _seed_state(
         "balance": dict(balance or {"cash_usd": 10_000.0}),
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 
@@ -79,12 +81,9 @@ def _kinds(report: ReconcileReport) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_cold_start_is_safe_and_persists(live_runtime: Path) -> None:
-    """First run (no prior state) is safe and writes a baseline."""
-    rp, rb, ro = _readers(
-        positions=[{"symbol": "NVDA", "qty": 3}],
-        open_orders=[{"order_id": "o1", "status": "open"}],
-    )
+def test_cold_start_with_positions_is_safe_and_persists(live_runtime: Path) -> None:
+    """Pre-existing positions are exposure-checked and may become the baseline."""
+    rp, rb, ro = _readers(positions=[{"symbol": "NVDA", "qty": 3}])
     report = reconcile("robinhood", rp, rb, ro)
 
     assert report.had_prior_state is False
@@ -92,6 +91,21 @@ def test_cold_start_is_safe_and_persists(live_runtime: Path) -> None:
     assert report.requires_halt is False
     assert report.state_persisted is True
     assert (paths.broker_dir("robinhood") / "runtime_state.json").is_file()
+
+
+def test_cold_start_with_unauthorized_open_order_forces_halt(
+    live_runtime: Path,
+) -> None:
+    """A resting order without durable authorization is never silently adopted."""
+    rp, rb, ro = _readers(
+        open_orders=[{"order_id": "o1", "status": "open", "client_order_id": "external-1"}]
+    )
+
+    report = reconcile("robinhood", rp, rb, ro)
+
+    assert _kinds(report) == {DeltaKind.UNAUTHORIZED_ORDER}
+    assert report.requires_halt is True
+    assert report.state_persisted is False
 
 
 # ---------------------------------------------------------------------------
@@ -255,20 +269,38 @@ def test_clean_reconcile_persists_broker_truth_roundtrip(live_runtime: Path) -> 
     rp, rb, ro = _readers(
         positions=[{"symbol": "NVDA", "qty": 5}],
         balance={"cash_usd": 4242.0},
-        open_orders=[{"order_id": "o2", "status": "open"}],
+        open_orders=[
+            {
+                "order_id": "o2",
+                "status": "open",
+                "client_order_id": "vt_order_2002",
+            }
+        ],
     )
-    report = reconcile("robinhood", rp, rb, ro)
+    report = reconcile(
+        "robinhood",
+        rp,
+        rb,
+        ro,
+        authorized_client_order_ids=("vt_order_2002",),
+    )
     assert report.state_persisted is True
 
     path = paths.broker_dir("robinhood") / "runtime_state.json"
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded["positions"] == [{"symbol": "NVDA", "qty": 5}]
-    assert loaded["open_orders"] == [{"order_id": "o2", "status": "open"}]
+    assert loaded["open_orders"] == [
+        {
+            "order_id": "o2",
+            "status": "open",
+            "client_order_id": "vt_order_2002",
+        }
+    ]
     assert loaded["balance"] == {"cash_usd": 4242.0}
     assert loaded["broker"] == "robinhood"
     assert loaded["schema_version"] == 1
     # No stray temp file left behind by the atomic replace.
-    assert not (path.parent / ".runtime_state.json.tmp").exists()
+    assert not list(path.parent.glob(".runtime_state.json.tmp-*"))
 
 
 def test_unsafe_reconcile_does_not_advance_state(live_runtime: Path) -> None:
@@ -293,21 +325,19 @@ def test_unsafe_reconcile_does_not_advance_state(live_runtime: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# corrupt state is renamed aside, treated as cold start
+# corrupt state fails closed and requires manual recovery
 # ---------------------------------------------------------------------------
 
 
-def test_corrupt_state_renamed_and_cold_starts(live_runtime: Path) -> None:
-    """A truncated/corrupt state file is renamed .corrupt-* and treated as cold."""
+def test_corrupt_state_fails_closed_without_rebaselining(live_runtime: Path) -> None:
+    """A truncated state cannot be silently replaced with broker truth."""
     path = paths.broker_dir("robinhood") / "runtime_state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
 
     rp, rb, ro = _readers(positions=[{"symbol": "NVDA", "qty": 1}])
-    report = reconcile("robinhood", rp, rb, ro)
+    with pytest.raises(ReconcileStateError, match="state is unreadable"):
+        reconcile("robinhood", rp, rb, ro)
 
-    assert report.had_prior_state is False  # corrupt -> cold start
-    assert report.is_safe is True
-    corrupt = list(path.parent.glob("runtime_state.json.corrupt-*"))
-    assert corrupt, "corrupt state file should be renamed aside"
-    assert path.is_file()  # a fresh clean state was written
+    assert path.read_text(encoding="utf-8") == "{not json"

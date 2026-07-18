@@ -12,6 +12,10 @@ interface Props {
     selected_ordinal?: number;
     max_order_usd?: number;
     daily_trade_cap?: number;
+    max_daily_loss_usd?: number;
+    max_price_deviation_bps?: number;
+    max_quote_age_seconds?: number;
+    max_clock_drift_seconds?: number;
     expires_at?: string;
   } | null;
   /**
@@ -118,6 +122,22 @@ function ProfileTile({
           <dt className="text-muted-foreground">{i18n.t("mandate.instruments")}</dt>
           <dd className="font-medium text-foreground">{profile.instruments.join(", ") || "—"}</dd>
         </div>
+        <div>
+          <dt className="text-muted-foreground">{i18n.t("mandate.dailyLoss")}</dt>
+          <dd className="font-mono font-medium text-foreground">{formatUsd(profile.max_daily_loss_usd)}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">{i18n.t("mandate.priceDeviation")}</dt>
+          <dd className="font-mono font-medium text-foreground">{profile.max_price_deviation_bps} bps</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">{i18n.t("mandate.quoteAge")}</dt>
+          <dd className="font-mono font-medium text-foreground">{profile.max_quote_age_seconds}s</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">{i18n.t("mandate.clockDrift")}</dt>
+          <dd className="font-mono font-medium text-foreground">{profile.max_clock_drift_seconds}s</dd>
+        </div>
       </dl>
 
       {profile.notes && (
@@ -180,8 +200,9 @@ function ProfileTile({
 /**
  * Renders a connector-runtime mandate proposal (SPEC Consent §1/§2).
  *
- * Each profile tile shows concrete numbers (universe, max order, daily cap, leverage,
- * instruments). Committing calls `api.commitMandate` — a privileged surface action,
+ * Each profile tile shows concrete numbers (universe, sizing, daily loss, price
+ * collar, quote freshness, clock drift, leverage, and instruments). Committing
+ * calls `api.commitMandate` — a privileged surface action,
  * never `api.sendMessage`. "Adjust" sends a natural-language message back to the agent
  * to re-render a fresh proposal. Once committed, the card collapses to a compact badge.
  */
@@ -222,6 +243,7 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
     const profile = proposal.profiles.find((p) => p.ordinal === committed.selected_ordinal);
     const maxOrder = committed.max_order_usd ?? profile?.max_order_usd;
     const dailyCap = committed.daily_trade_cap ?? profile?.daily_trade_cap;
+    const dailyLoss = committed.max_daily_loss_usd ?? profile?.max_daily_loss_usd;
     const expires = committed.expires_at ? new Date(committed.expires_at) : null;
     return (
       <div className="flex gap-3">
@@ -236,6 +258,9 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
               <span className="shrink-0 font-mono text-[11px]">· ≤{formatUsd(maxOrder)}/order</span>
             )}
             {dailyCap != null && <span className="shrink-0 font-mono text-[11px]">· {dailyCap}/day</span>}
+            {dailyLoss != null && (
+              <span className="shrink-0 font-mono text-[11px]">· loss ≤{formatUsd(dailyLoss)}/day</span>
+            )}
             {expires && (
               <span className="shrink-0 text-[10px] text-muted-foreground">
                 · expires {expires.toLocaleDateString()}

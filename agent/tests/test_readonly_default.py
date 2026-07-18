@@ -36,7 +36,7 @@ from src.config.schema import (
     ROBINHOOD_MCP_SERVER_SEED,
 )
 from src.live.mandate.model import MANDATE_SCHEMA_VERSION
-from src.live.order_guard import LiveOrderGuardTool
+from src.live.order_guard import LiveCancelGuardTool, LiveOrderGuardTool
 from src.live.registry import is_live_broker, wrap_live_broker_tools
 from src.trading.connectors.robinhood.classification import ROBINHOOD_TOOL_CLASS
 from src.live.classification import ToolClass
@@ -208,7 +208,7 @@ def test_order_tools_appear_gate_wrapped_when_allowlisted(live_runtime: Path) ->
 
     assert "place_order" in by_name and "cancel_order" in by_name
     assert isinstance(by_name["place_order"], LiveOrderGuardTool)
-    assert isinstance(by_name["cancel_order"], LiveOrderGuardTool)
+    assert isinstance(by_name["cancel_order"], LiveCancelGuardTool)
     assert by_name["place_order"].broker == "robinhood"
     # Reads stay plain read-only.
     assert type(by_name["get_account"]) is MCPRemoteTool
@@ -261,13 +261,15 @@ def test_halt_omits_order_tools_at_registration(live_runtime: Path) -> None:
     tools = _assemble(enabled)
     names = {t._spec.remote_name for t in tools}
 
-    # Order tools are not even present in the assembled list.
+    # Risk-increasing placement is absent; risk-reducing cancellation survives.
     assert "place_order" not in names
-    assert "cancel_order" not in names
+    assert "cancel_order" in names
     assert not any(isinstance(t, LiveOrderGuardTool) for t in tools)
     # Read tools survive a halt.
     assert "get_account" in names
-    assert all(t.is_readonly for t in tools)
+    assert all(
+        t.is_readonly for t in tools if t._spec.remote_name != "cancel_order"
+    )
 
 
 # --- H7: headless / no-token live channel is skipped, TTY registers ----------

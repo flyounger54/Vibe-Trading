@@ -334,8 +334,14 @@ class TradingPlaceOrderTool(BaseTool):
             "order_type": {"type": "string", "enum": ["market", "limit"], "default": "market"},
             "limit_price": {"type": "number", "description": "Required for limit orders."},
             "time_in_force": {"type": "string", "enum": ["day", "gtc"], "default": "day"},
+            "client_order_id": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 64,
+                "description": "Caller-stable idempotency key. Reusing it never re-sends an order.",
+            },
         },
-        "required": ["symbol", "side"],
+        "required": ["symbol", "side", "client_order_id"],
     }
     repeatable = False
     is_readonly = False
@@ -353,6 +359,7 @@ class TradingPlaceOrderTool(BaseTool):
                     order_type=str(kwargs.get("order_type") or "market"),
                     limit_price=_num_or_none(kwargs.get("limit_price")),
                     time_in_force=str(kwargs.get("time_in_force") or "day"),
+                    client_order_id=str(kwargs.get("client_order_id") or ""),
                     **_overrides(kwargs),
                 )
             )

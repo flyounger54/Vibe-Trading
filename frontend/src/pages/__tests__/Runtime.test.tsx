@@ -40,6 +40,10 @@ function makeStatus(overrides: Partial<LiveStatus> = {}): LiveStatus {
             max_trades_per_day: 4,
             allowed_instruments: ["equity"],
             account_funding_usd: 10000,
+            max_daily_loss_usd: 50,
+            max_price_deviation_bps: 25,
+            max_quote_age_seconds: 15,
+            max_clock_drift_seconds: 3,
           },
         },
         halted: false,
@@ -82,6 +86,10 @@ describe("Runtime page", () => {
     expect(screen.getByText("runtime active")).toBeInTheDocument();
     expect(screen.getByText("acct-1")).toBeInTheDocument();
     expect(screen.getByText(/\$750\/order/)).toBeInTheDocument();
+    expect(screen.getByText(/daily loss \$50/)).toBeInTheDocument();
+    expect(screen.getByText(/±25 bps/)).toBeInTheDocument();
+    expect(screen.getByText(/quote age ≤15s/)).toBeInTheDocument();
+    expect(screen.getByText(/clock drift ≤3s/)).toBeInTheDocument();
     expect(screen.getByText("sandbox")).toBeInTheDocument();
     expect(screen.getByText("auth missing")).toBeInTheDocument();
     expect(screen.getByText("dormant")).toBeInTheDocument();

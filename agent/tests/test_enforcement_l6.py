@@ -59,7 +59,8 @@ def test_catalog_is_exactly_the_canonical_set() -> None:
 def test_extractor_maps_notional_order() -> None:
     intent = extract_order_intent(
         "place_order",
-        {"symbol": "aapl", "side": "buy", "instrument_type": "stock", "notional_usd": 250.0},
+        {"symbol": "aapl", "side": "buy", "instrument_type": "stock", "notional_usd": 250.0,
+         "client_order_id": "vt_extract_0001"},
     )
     assert intent is not None
     assert intent.symbol == "AAPL"
@@ -72,7 +73,8 @@ def test_extractor_maps_notional_order() -> None:
 def test_extractor_maps_quantity_and_dollar_amount_alias() -> None:
     intent = extract_order_intent(
         "place_order",
-        {"ticker": "NVDA", "action": "sell", "type": "equity", "quantity": 3, "dollar_amount": 600},
+        {"ticker": "NVDA", "action": "sell", "type": "equity", "quantity": 3, "dollar_amount": 600,
+         "client_order_id": "vt_extract_0002"},
     )
     assert intent is not None
     assert intent.symbol == "NVDA"
@@ -88,6 +90,7 @@ def test_extractor_ignores_unknown_extra_keys() -> None:
         {
             "symbol": "MSFT", "side": "buy", "instrument_type": "equity",
             "quantity": 1, "time_in_force": "gtc", "client_tag": "x", "extended_hours": True,
+            "client_order_id": "vt_extract_0003",
         },
     )
     assert intent is not None
@@ -150,6 +153,12 @@ def _write_mandate(live_runtime: Path, *, max_order_notional_usd: float = 750.0)
             "min_avg_daily_volume_usd": None,
             "exclude_symbols": [],
         },
+        "execution_controls": {
+            "max_daily_loss_usd": 5000.0,
+            "max_price_deviation_bps": 100.0,
+            "max_quote_age_seconds": 30.0,
+            "max_clock_drift_seconds": 5.0,
+        },
         "consent": {
             "created_at": created.isoformat(),
             "consent_token_sha256": "deadbeef",
@@ -174,10 +183,16 @@ class _BrokerQuoteAdapter:
         if remote_name == "get_positions":
             return {"positions": [], "status": "ok"}
         if remote_name == "get_account":
-            return {"equity": 100000.0, "status": "ok"}
+            return {"account": {"equity": 100000.0, "currency": "USD"}, "status": "ok"}
+        if remote_name == "list_orders":
+            return {"open_orders": [], "status": "ok"}
         if remote_name == "get_quotes":
             self.quote_calls += 1
-            return {"status": "ok", "results": [{"symbol": arguments.get("symbol"), "last_price": self._price}]}
+            return {"status": "ok", "results": [{
+                "symbol": arguments.get("symbol"), "last_price": self._price,
+                "bid": self._price, "ask": self._price, "currency": "USD",
+                "time": datetime.now(timezone.utc).isoformat(),
+            }]}
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
         return {"status": "ok", "order_id": "rh_q", "state": "accepted"}
 
@@ -193,7 +208,9 @@ class _NoBrokerQuoteAdapter:
         if remote_name == "get_positions":
             return {"positions": [], "status": "ok"}
         if remote_name == "get_account":
-            return {"equity": 100000.0, "status": "ok"}
+            return {"account": {"equity": 100000.0, "currency": "USD"}, "status": "ok"}
+        if remote_name == "list_orders":
+            return {"open_orders": [], "status": "ok"}
         if remote_name == "get_quotes":
             return {"status": "error", "error": "quotes unavailable"}
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
@@ -221,12 +238,18 @@ def _guard(adapter):
     )
 
 
+def _execute(guard, **kwargs):
+    kwargs.setdefault("client_order_id", "vt_remote_quote_0001")
+    kwargs.setdefault("order_type", "market")
+    return guard.execute(**kwargs)
+
+
 def test_quantity_only_uses_broker_quote_and_enforces_notional(live_runtime: Path) -> None:
     _write_mandate(live_runtime, max_order_notional_usd=750.0)
     adapter = _BrokerQuoteAdapter(price=100.0)  # 10 * 100 = 1000 > 750
     guard = _guard(adapter)
     out = json.loads(
-        guard.execute(symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
+        _execute(guard, symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
     )
     assert adapter.quote_calls == 1
     assert out["status"] == "blocked"
@@ -240,24 +263,25 @@ def test_quantity_only_in_mandate_forwards(live_runtime: Path) -> None:
     adapter = _BrokerQuoteAdapter(price=100.0)  # 10 * 100 = 1000 <= 2000
     guard = _guard(adapter)
     out = json.loads(
-        guard.execute(symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
+        _execute(guard, symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
     )
     assert out.get("status") == "ok"
     assert len(adapter.order_calls) == 1
 
 
-def test_quantity_falls_back_to_data_loader(live_runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When the broker quote tool errors, the gate derives price from the data
-    loaders (stubbed — no network)."""
+def test_quantity_does_not_fallback_to_untimestamped_daily_data(
+    live_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loader close cannot substitute for a fresh broker execution quote."""
     _write_mandate(live_runtime, max_order_notional_usd=750.0)
     monkeypatch.setattr(order_guard, "last_price_usd", lambda sym, ac: 100.0)
     adapter = _NoBrokerQuoteAdapter()
     guard = _guard(adapter)
     out = json.loads(
-        guard.execute(symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
+        _execute(guard, symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
     )
     assert out["status"] == "blocked"
-    assert out["breach"]["limit"] == "max_order_notional_usd"
+    assert "priced" in out["reason"].lower()
     assert adapter.order_calls == []
 
 
@@ -269,7 +293,7 @@ def test_quantity_no_quote_anywhere_denies_fail_closed(live_runtime: Path, monke
     adapter = _NoBrokerQuoteAdapter()
     guard = _guard(adapter)
     out = json.loads(
-        guard.execute(symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
+        _execute(guard, symbol="AAPL", side="buy", instrument_type="equity", quantity=10.0)
     )
     assert out["status"] == "blocked"
     assert out["decision"] == "deny"

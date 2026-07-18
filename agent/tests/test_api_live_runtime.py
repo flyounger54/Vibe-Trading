@@ -48,6 +48,10 @@ def _valid_mandate_state(broker: str = "robinhood") -> api_server.ActiveMandateS
             max_trades_per_day=5,
             allowed_instruments=["equity"],
             account_funding_usd=5000.0,
+            max_daily_loss_usd=50.0,
+            max_price_deviation_bps=50.0,
+            max_quote_age_seconds=15.0,
+            max_clock_drift_seconds=3.0,
         ),
     )
 
@@ -126,6 +130,7 @@ def test_live_status_reflects_active_mandate(tmp_path: Path, monkeypatch) -> Non
     rh = response.json()["brokers"][0]
     assert rh["mandate"]["expired"] is False
     assert rh["mandate"]["limits"]["max_order_notional_usd"] == 750.0
+    assert rh["mandate"]["limits"]["max_daily_loss_usd"] == 50.0
 
 
 # --------------------------------------------------------------------------- #
