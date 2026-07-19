@@ -876,7 +876,10 @@ def _run_connector_command_from_repl(console: Any, args: list[str]) -> None:
         parsed = parser.parse_args(argv)
     except SystemExit:
         # argparse already printed usage to stderr; keep the REPL alive.
-        console.print("[dim]Usage: /connector [list|status|start|stop|halt|resume|revoke][/dim]")
+        console.print(
+            "[dim]Usage: /connector "
+            "[list|status|start|stop|halt|resume|revoke|qualify][/dim]"
+        )
         return
     try:
         _dispatch_connector(parsed)

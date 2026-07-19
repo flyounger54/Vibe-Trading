@@ -23,6 +23,7 @@ remote-MCP cancellation wrapper remains a separate Node 12 follow-up.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import stat
@@ -33,7 +34,7 @@ from typing import Mapping
 
 from src.live.paths import live_root
 
-QUALIFICATION_SCHEMA_VERSION = 1
+QUALIFICATION_SCHEMA_VERSION = 2
 QUALIFICATION_POLICY_VERSION = "node12a-live-qualification-v1"
 MIN_PAPER_SOAK_TRADING_DAYS = 30
 
@@ -372,6 +373,9 @@ def _parse_record(raw: object) -> QualificationRecord:
     accepted = soak["accepted"]
     if not isinstance(consecutive, bool) or not isinstance(accepted, bool):
         raise TypeError("paper soak consecutive/accepted flags must be booleans")
+    evidence_policy = str(soak["evidence_policy_version"]).strip()
+    if evidence_policy != "node12c-signed-paper-soak-v1":
+        raise ValueError("paper soak evidence policy is invalid")
     if state in (QualificationState.PILOT_ELIGIBLE, QualificationState.PILOT_ACTIVE):
         if len(observed) < required_days:
             raise ValueError("paper soak has fewer observed days than required")
@@ -392,6 +396,31 @@ def _parse_record(raw: object) -> QualificationRecord:
     evidence_refs = tuple(str(item).strip() for item in evidence)
     if any(not item or len(item) > 500 for item in evidence_refs):
         raise ValueError("evidence reference is invalid")
+    if evidence_refs:
+        if len(evidence_refs) != 1:
+            raise ValueError("paper soak requires exactly one signed evidence reference")
+        from src.live.paper_soak import PaperSoakError, verify_paper_soak_evidence_ref
+
+        try:
+            verified = verify_paper_soak_evidence_ref(
+                evidence_refs[0],
+                broker=broker,
+                account_ref_sha256=hashlib.sha256(account_ref.encode("utf-8")).hexdigest(),
+                build_revision=build,
+                policy_version=policy,
+            )
+        except PaperSoakError as exc:
+            raise ValueError(f"paper soak evidence verification failed: {exc}") from exc
+        if verified.observed_trading_days != observed:
+            raise ValueError("paper soak registry days do not match signed evidence")
+        if state in (
+            QualificationState.PILOT_ELIGIBLE,
+            QualificationState.PILOT_ACTIVE,
+            QualificationState.REVOKED,
+        ) and not verified.eligible:
+            raise ValueError("paper soak signed evidence is not pilot eligible")
+    elif observed:
+        raise ValueError("observed paper soak requires signed daily evidence")
 
     return QualificationRecord(
         broker=broker,

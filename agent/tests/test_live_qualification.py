@@ -9,10 +9,13 @@ from pathlib import Path
 import pytest
 
 import src.live.paths as live_paths
+import src.live.paper_soak as paper_soak
+from src.live.paper_soak import SOAK_EVIDENCE_POLICY_VERSION, VerifiedPaperSoak
 from src.live.qualification import (
     BUILD_REVISION_ENV,
     LIVE_BROKER_ENV,
     QUALIFICATION_POLICY_VERSION,
+    QUALIFICATION_SCHEMA_VERSION,
     QualificationState,
     evaluate_live_qualification,
     transition_allowed,
@@ -27,6 +30,17 @@ def qualification_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(live_paths, "get_runtime_root", lambda: tmp_path)
     monkeypatch.delenv(LIVE_BROKER_ENV, raising=False)
     monkeypatch.delenv(BUILD_REVISION_ENV, raising=False)
+
+    def verify_fixture(ref: str, **_: object) -> VerifiedPaperSoak:
+        count = int(ref.rsplit("/", 1)[-1])
+        days = tuple(date.fromisoformat(item) for item in _trading_days(count))
+        return VerifiedPaperSoak(
+            observed_trading_days=days,
+            completed_drills=paper_soak.REQUIRED_DRILLS if count >= 30 else (),
+            eligible=count >= 30,
+        )
+
+    monkeypatch.setattr(paper_soak, "verify_paper_soak_evidence_ref", verify_fixture)
     return tmp_path
 
 
@@ -66,8 +80,9 @@ def _record(*, state: str = "pilot_active", account_ref: str = "acct-1") -> dict
             "observed_trading_days": _trading_days(),
             "consecutive": True,
             "accepted": True,
+            "evidence_policy_version": SOAK_EVIDENCE_POLICY_VERSION,
         },
-        "evidence_refs": ["node12-paper-soak://alpaca/acct-1/run-1"],
+        "evidence_refs": ["test-paper-soak/30"],
     }
 
 
@@ -75,7 +90,10 @@ def _write_registry(root: Path, records: list[dict]) -> Path:
     live_dir = root / "live"
     live_dir.mkdir(parents=True, exist_ok=True)
     path = live_dir / "qualification-registry.json"
-    path.write_text(json.dumps({"schema_version": 1, "records": records}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"schema_version": QUALIFICATION_SCHEMA_VERSION, "records": records}),
+        encoding="utf-8",
+    )
     path.chmod(0o600)
     return path
 
@@ -184,7 +202,7 @@ def test_in_progress_paper_soak_is_visible_but_not_live_eligible(
     record = _record(state="paper_soak")
     record["paper_soak"]["observed_trading_days"] = _trading_days(7)
     record["paper_soak"]["accepted"] = False
-    record["evidence_refs"] = []
+    record["evidence_refs"] = ["test-paper-soak/7"]
     _write_registry(qualification_root, [record])
 
     decision = evaluate_live_qualification("alpaca", "acct-1")

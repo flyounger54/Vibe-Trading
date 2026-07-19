@@ -4211,6 +4211,7 @@ source = { editable = "." }
 dependencies = [
     { name = "akshare" },
     { name = "ccxt" },
+    { name = "cryptography" },
     { name = "ddgs" },
     { name = "defusedxml" },
     { name = "duckdb" },
@@ -4302,6 +4303,7 @@ requires-dist = [
     { name = "akshare", specifier = ">=1.12.0" },
     { name = "bandit", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=1.9.0,<2" },
     { name = "ccxt", specifier = ">=4.0.0" },
+    { name = "cryptography", specifier = ">=49.0.0,<50" },
     { name = "ddgs", specifier = ">=6.0.0" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "duckdb", specifier = ">=1.2.0" },

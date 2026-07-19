@@ -483,6 +483,383 @@ def test_gate_quantity_unpriceable_denies(monkeypatch) -> None:
     assert out["status"] == "blocked" and "priced" in out["reason"]
 
 
+def _execute_live(connector: object) -> dict[str, object]:
+    return gate.execute_live_order(
+        broker="alpaca",
+        connector_module=connector,
+        config=object(),
+        intent=_intent(),
+        place_kwargs={"symbol": "AAPL", "side": "buy", "notional": 500.0},
+    )
+
+
+@pytest.mark.parametrize("action", ["pending", "conflict"])
+def test_live_gate_rejects_nonterminal_ledger_claims(monkeypatch, action: str) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    monkeypatch.setattr(
+        gate,
+        "claim_order",
+        lambda *args, **kwargs: SimpleNamespace(action=action, result=None),
+    )
+    conn = _FakeConnector()
+
+    out = _execute_live(conn)
+
+    assert out["status"] == "blocked"
+    assert "client_order_id" in str(out["reason"])
+    assert conn.placed == []
+
+
+def test_live_gate_replays_terminal_claim_without_broker_write(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    monkeypatch.setattr(
+        gate,
+        "claim_order",
+        lambda *args, **kwargs: SimpleNamespace(
+            action="replay", result={"status": "ok", "order_id": "old-order"}
+        ),
+    )
+    conn = _FakeConnector()
+
+    out = _execute_live(conn)
+
+    assert out["idempotency_replayed"] is True
+    assert out["order_id"] == "old-order"
+    assert conn.placed == []
+
+
+def test_live_gate_rejects_unavailable_ledger(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+
+    def fail_claim(*args, **kwargs):
+        raise gate.OrderLedgerError("tampered")
+
+    monkeypatch.setattr(gate, "claim_order", fail_claim)
+    out = _execute_live(_FakeConnector())
+    assert out["status"] == "blocked"
+    assert "ledger unavailable" in str(out["reason"])
+
+
+def test_live_gate_requires_node12b_execution_controls(monkeypatch) -> None:
+    mandate = SimpleNamespace(
+        schema_version=MANDATE_SCHEMA_VERSION,
+        execution_controls=None,
+        consent=SimpleNamespace(account_ref="acct-1", consent_token_sha256="hash"),
+    )
+    _patch_gate(monkeypatch, mandate=mandate)
+
+    out = _execute_live(_FakeConnector())
+
+    assert out["status"] == "blocked"
+    assert "execution controls" in str(out["reason"])
+
+
+@pytest.mark.parametrize("mode", ["missing_snapshot", "reconcile_error", "unsafe"])
+def test_live_gate_snapshot_and_reconciliation_fail_closed(
+    monkeypatch, mode: str
+) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    conn = _FakeConnector()
+    if mode == "missing_snapshot":
+        conn._positions = {"status": "error", "error": "offline"}
+    elif mode == "reconcile_error":
+        monkeypatch.setattr(
+            gate,
+            "reconcile",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("corrupt")),
+        )
+    else:
+        monkeypatch.setattr(
+            gate, "reconcile", lambda *args, **kwargs: SimpleNamespace(is_safe=False)
+        )
+
+    out = _execute_live(conn)
+
+    assert out["status"] == "blocked"
+    assert conn.placed == []
+
+
+@pytest.mark.parametrize("mode", ["reservations", "equity", "daily_loss", "risk"])
+def test_live_gate_normalization_and_risk_fail_closed(monkeypatch, mode: str) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    if mode == "reservations":
+        monkeypatch.setattr(gate, "open_order_reservations_usd", lambda *a, **k: None)
+    elif mode == "equity":
+        monkeypatch.setattr(gate, "normalize_account_equity_usd", lambda *a, **k: None)
+    elif mode == "daily_loss":
+        monkeypatch.setattr(
+            gate,
+            "observe_daily_loss",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("state corrupt")),
+        )
+    else:
+        monkeypatch.setattr(
+            gate,
+            "check_execution_risk",
+            lambda *a, **k: SimpleNamespace(code="stale_quote", detail="stale"),
+        )
+
+    conn = _FakeConnector()
+    out = _execute_live(conn)
+
+    assert out["status"] == "blocked"
+    assert conn.placed == []
+
+
+def test_live_gate_marks_postwrite_ledger_and_audit_failures(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    audits = iter(({"phase": "pre"}, None))
+    monkeypatch.setattr(gate, "write_live_action", lambda *a, **k: next(audits))
+
+    def fail_complete(*args, **kwargs):
+        raise gate.OrderLedgerError("disk failed")
+
+    halts: list[str] = []
+    monkeypatch.setattr(gate, "complete_order", fail_complete)
+    monkeypatch.setattr(
+        gate, "trip_halt", lambda reason, detail, broker: halts.append(reason)
+    )
+
+    out = _execute_live(_FakeConnector())
+
+    assert out["status"] == "ok"
+    assert out["safety_halt"] is True
+    assert out["ledger_error"] == "disk failed"
+    assert out["audit_error"] == "post-write live audit failed"
+    assert halts == ["order_ledger", "live_audit"]
+
+
+def test_live_gate_handles_non_object_broker_result(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+
+    class _NonObjectConnector(_FakeConnector):
+        def place_order(self, config, **kwargs):
+            return "unexpected"
+
+    out = _execute_live(_NonObjectConnector())
+
+    assert out["status"] == "error"
+    assert out["error"] == "non-dict broker result"
+
+
+@pytest.mark.parametrize("action", ["replay", "pending", "conflict"])
+def test_paper_gate_honors_ledger_claim_state(monkeypatch, action: str) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    result = {"status": "ok", "order_id": "existing"} if action == "replay" else None
+    monkeypatch.setattr(
+        gate,
+        "claim_order",
+        lambda *args, **kwargs: SimpleNamespace(action=action, result=result),
+    )
+    conn = _FakeConnector()
+
+    out = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=conn,
+        config=object(),
+        intent=_intent(),
+        place_kwargs={"symbol": "AAPL", "side": "buy", "notional": 500.0},
+    )
+
+    if action == "replay":
+        assert out["idempotency_replayed"] is True
+    else:
+        assert out["status"] == "blocked"
+    assert conn.placed == []
+
+
+def test_paper_gate_rejects_ledger_and_halt_failures(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate(), halted=True)
+    halted = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=_FakeConnector(),
+        config=object(),
+        intent=_intent(),
+        place_kwargs={},
+    )
+    assert halted["status"] == "blocked"
+
+    _patch_gate(monkeypatch, mandate=_mandate())
+
+    def fail_claim(*args, **kwargs):
+        raise gate.OrderLedgerError("ledger offline")
+
+    monkeypatch.setattr(gate, "claim_order", fail_claim)
+    unavailable = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=_FakeConnector(),
+        config=object(),
+        intent=_intent(),
+        place_kwargs={},
+    )
+    assert "ledger unavailable" in str(unavailable["reason"])
+
+
+def test_paper_gate_requires_valid_mandate_and_fresh_quote(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=None)
+    invalid = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=_FakeConnector(),
+        config=object(),
+        intent=_intent(),
+        place_kwargs={},
+    )
+    assert invalid["status"] == "blocked"
+
+    _patch_gate(monkeypatch, mandate=_mandate())
+    no_quote = _FakeConnector()
+    no_quote.get_quote = lambda symbol, config=None: {"status": "error"}
+    missing = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=no_quote,
+        config=object(),
+        intent=_intent(),
+        place_kwargs={},
+    )
+    assert missing["status"] == "blocked"
+    assert "quote unavailable" in str(missing["reason"])
+
+
+def test_paper_gate_requires_normalized_reservations(monkeypatch) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    monkeypatch.setattr(gate, "open_order_reservations_usd", lambda *a, **k: None)
+
+    out = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=_FakeConnector(),
+        config=object(),
+        intent=_intent(),
+        place_kwargs={},
+    )
+
+    assert out["status"] == "blocked"
+    assert "USD-normalized" in str(out["reason"])
+
+
+@pytest.mark.parametrize("mode", ["snapshot", "reconcile_error", "unsafe", "daily_loss", "risk", "mandate"])
+def test_paper_gate_rejects_untrusted_runtime_state(monkeypatch, mode: str) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+    conn = _FakeConnector()
+    if mode == "snapshot":
+        conn._positions = {"status": "error"}
+    elif mode == "reconcile_error":
+        monkeypatch.setattr(
+            gate,
+            "reconcile",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("corrupt")),
+        )
+    elif mode == "unsafe":
+        monkeypatch.setattr(gate, "reconcile", lambda *a, **k: SimpleNamespace(is_safe=False))
+    elif mode == "daily_loss":
+        monkeypatch.setattr(
+            gate,
+            "observe_daily_loss",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("corrupt")),
+        )
+    elif mode == "risk":
+        monkeypatch.setattr(
+            gate,
+            "check_execution_risk",
+            lambda *a, **k: SimpleNamespace(code="daily_loss", detail="limit"),
+        )
+    else:
+        monkeypatch.setattr(
+            gate,
+            "check_mandate",
+            lambda *a, **k: SimpleNamespace(detail="mandate breach", limit="max_order"),
+        )
+
+    out = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=conn,
+        config=object(),
+        intent=_intent(),
+        place_kwargs={"symbol": "AAPL", "side": "buy", "notional": 500.0},
+    )
+
+    assert out["status"] == "blocked"
+    assert conn.placed == []
+
+
+@pytest.mark.parametrize("mode", ["raise", "non_object", "ledger"])
+def test_paper_gate_persists_terminal_broker_failures(monkeypatch, mode: str) -> None:
+    _patch_gate(monkeypatch, mandate=_mandate())
+
+    class _FailureConnector(_FakeConnector):
+        def place_order(self, config, **kwargs):
+            if mode == "raise":
+                raise RuntimeError("broker unavailable")
+            if mode == "non_object":
+                return "unexpected"
+            return super().place_order(config, **kwargs)
+
+    if mode == "ledger":
+        monkeypatch.setattr(
+            gate,
+            "complete_order",
+            lambda *a, **k: (_ for _ in ()).throw(gate.OrderLedgerError("disk")),
+        )
+    out = gate.execute_paper_order(
+        broker="alpaca",
+        profile_id="alpaca-paper-trade",
+        connector_module=_FailureConnector(),
+        config=object(),
+        intent=_intent(),
+        place_kwargs={"symbol": "AAPL", "side": "buy", "notional": 500.0},
+    )
+
+    assert out["status"] == "error"
+    if mode == "ledger":
+        assert out["safety_error"] == "paper order ledger completion failed: disk"
+
+
+def test_sdk_gate_low_level_fail_closed_helpers(monkeypatch) -> None:
+    real_quote_price = gate._quote_price
+    assert gate._connector_quote(SimpleNamespace(), object(), "AAPL") is None
+    raising_quote = SimpleNamespace(
+        get_quote=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline"))
+    )
+    assert gate._connector_quote(raising_quote, object(), "AAPL") is None
+
+    assert gate._payload_rows([{"symbol": "AAPL"}], "positions") == [
+        {"symbol": "AAPL"}
+    ]
+    assert gate._payload_rows({"positions": ["bad"]}, "positions") is None
+
+    plain = _intent(notional=100.0, qty=None)
+    assert gate._normalize_notional(plain, object(), object()) is plain
+    quantity = _intent(notional=None, qty=2.0)
+    monkeypatch.setattr(gate, "_quote_price", lambda *a: None)
+    assert gate._normalize_notional(quantity, object(), object()) is None
+    monkeypatch.setattr(gate, "_quote_price", lambda *a: 25.0)
+    normalized = gate._normalize_notional(quantity, object(), object())
+    assert normalized is not None and normalized.notional_usd == 50.0
+    monkeypatch.setattr(gate, "_connector_quote_price", lambda *a: 123.0)
+    assert real_quote_price(quantity, object(), object()) == 123.0
+
+
+def test_sdk_gate_blocked_completion_surfaces_ledger_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gate,
+        "complete_order",
+        lambda *a, **k: (_ for _ in ()).throw(gate.OrderLedgerError("disk")),
+    )
+    refusal = {"status": "blocked"}
+
+    out = gate._complete_blocked(
+        "alpaca", "paper:test", _intent(), "f" * 64, refusal
+    )
+
+    assert out["ledger_error"] == "disk"
+
+
 # --------------------------------------------------------------------------- #
 # Connector order-method validation (fail-closed, no SDK needed)
 # --------------------------------------------------------------------------- #

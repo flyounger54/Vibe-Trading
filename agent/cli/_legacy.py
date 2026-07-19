@@ -3517,6 +3517,155 @@ def cmd_connector_revoke(profile_id: Optional[str]) -> int:
     return cmd_live_revoke(broker)
 
 
+def _load_qualification_json(path_value: str, *, label: str) -> Dict[str, Any]:
+    """Load one bounded, regular JSON object supplied to the operator CLI."""
+    path = Path(path_value).expanduser()
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} cannot be inspected: {exc}") from exc
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a regular non-symlink file")
+    if metadata.st_size > 8 * 1024 * 1024:
+        raise ValueError(f"{label} exceeds the 8 MiB safety limit")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"{label} is not readable JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} root must be an object")
+    return payload
+
+
+def cmd_connector_qualify_start(
+    profile_id: str,
+    *,
+    account_ref: str,
+    build_revision: str,
+    calendar_path: str,
+    actor: str,
+) -> int:
+    """Start one operator-owned signed paper-soak campaign."""
+    from src.live.paper_soak import PaperSoakError, start_paper_soak
+
+    try:
+        calendar = _load_qualification_json(calendar_path, label="calendar manifest")
+        status = start_paper_soak(
+            profile_id,
+            account_ref,
+            build_revision,
+            calendar,
+            actor=actor,
+        )
+    except (PaperSoakError, ValueError) as exc:
+        console.print(f"[red]Paper qualification start failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    console.print_json(data=status.to_dict())
+    return EXIT_SUCCESS
+
+
+def cmd_connector_qualify_collect(
+    campaign_id: str,
+    *,
+    session_proof_path: str,
+    symbol: str,
+    probe_order_path: str,
+) -> int:
+    """Collect connector snapshots and run an explicit paper idempotency probe."""
+    from src.live.paper_soak import PaperSoakError, collect_paper_soak_day
+
+    try:
+        session_proof = _load_qualification_json(
+            session_proof_path, label="paper-runner session proof"
+        )
+        probe_order = _load_qualification_json(
+            probe_order_path, label="paper probe order"
+        )
+        status = collect_paper_soak_day(
+            campaign_id,
+            session_proof,
+            symbol=symbol,
+            probe_order=probe_order,
+        )
+    except (PaperSoakError, ValueError) as exc:
+        console.print(f"[red]Paper qualification collection failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    console.print_json(data=status.to_dict())
+    return EXIT_SUCCESS if status.last_day_accepted else EXIT_RUN_FAILED
+
+
+def cmd_connector_qualify_run(
+    campaign_id: str,
+    *,
+    symbol: str,
+    probe_order_path: str,
+    drills_path: Optional[str],
+    poll_seconds: float,
+) -> int:
+    """Run one full signed paper session from before open through close."""
+    from src.live.paper_soak import PaperSoakError, run_paper_soak_session
+
+    try:
+        probe_order = _load_qualification_json(
+            probe_order_path, label="paper probe order"
+        )
+        drills: Dict[str, Any] = {}
+        if drills_path:
+            drills = _load_qualification_json(drills_path, label="fault-drill evidence")
+        status = run_paper_soak_session(
+            campaign_id,
+            symbol=symbol,
+            probe_order=probe_order,
+            drills=drills,
+            poll_seconds=poll_seconds,
+        )
+    except (PaperSoakError, ValueError) as exc:
+        console.print(f"[red]Paper qualification session failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    console.print_json(data=status.to_dict())
+    return EXIT_SUCCESS if status.last_day_accepted else EXIT_RUN_FAILED
+
+
+def cmd_connector_qualify_status(campaign_id: str) -> int:
+    """Verify and print one signed paper-soak campaign without mutation."""
+    from src.live.paper_soak import PaperSoakError, load_paper_soak_status
+
+    try:
+        status = load_paper_soak_status(campaign_id)
+    except PaperSoakError as exc:
+        console.print(f"[red]Paper qualification status failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    console.print_json(data=status.to_dict())
+    return EXIT_SUCCESS
+
+
+def cmd_connector_qualify_promote(
+    campaign_id: str,
+    *,
+    actor: str,
+    confirm: bool,
+) -> int:
+    """Advance verified evidence to pilot-eligible; never activate live."""
+    from src.live.paper_soak import PaperSoakError, promote_paper_soak
+
+    if not confirm:
+        console.print(
+            "[red]Promotion requires --confirm after reviewing all 30 signed days.[/red]"
+        )
+        return EXIT_USAGE_ERROR
+    try:
+        status = promote_paper_soak(campaign_id, actor=actor)
+    except PaperSoakError as exc:
+        console.print(f"[red]Paper qualification promotion failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    console.print_json(data=status.to_dict())
+    console.print(
+        "[yellow]Pilot eligible only; live execution remains disabled until a separate "
+        "operator activation in Node 12D.[/yellow]"
+    )
+    return EXIT_SUCCESS
+
+
 def _dispatch_connector(args: argparse.Namespace) -> int:
     """Route parsed ``connector`` subcommands."""
     sub = getattr(args, "connector_command", None)
@@ -3610,6 +3759,43 @@ def _dispatch_connector(args: argparse.Namespace) -> int:
         return cmd_connector_resume(args.profile)
     if sub == "revoke":
         return cmd_connector_revoke(args.profile)
+    if sub == "qualify":
+        qualify_sub = getattr(args, "qualify_command", None)
+        if qualify_sub == "start":
+            return cmd_connector_qualify_start(
+                args.profile,
+                account_ref=args.account_ref,
+                build_revision=args.build_revision,
+                calendar_path=args.calendar_path,
+                actor=args.actor,
+            )
+        if qualify_sub == "collect":
+            return cmd_connector_qualify_collect(
+                args.campaign_id,
+                session_proof_path=args.session_proof_path,
+                symbol=args.symbol,
+                probe_order_path=args.probe_order_path,
+            )
+        if qualify_sub == "run":
+            return cmd_connector_qualify_run(
+                args.campaign_id,
+                symbol=args.symbol,
+                probe_order_path=args.probe_order_path,
+                drills_path=args.drills_path,
+                poll_seconds=args.poll_seconds,
+            )
+        if qualify_sub == "status":
+            return cmd_connector_qualify_status(args.campaign_id)
+        if qualify_sub == "promote":
+            return cmd_connector_qualify_promote(
+                args.campaign_id,
+                actor=args.actor,
+                confirm=args.confirm,
+            )
+        console.print(
+            "[red]connector qualify requires start, run, collect, status, or promote.[/red]"
+        )
+        return EXIT_USAGE_ERROR
     console.print("[red]connector requires a subcommand.[/red] Try: vibe-trading connector list")
     return EXIT_USAGE_ERROR
 
@@ -3780,6 +3966,70 @@ def _build_parser() -> argparse.ArgumentParser:
     connector_history.add_argument("--no-rth", action="store_true", help="Include outside-regular-hours data when available")
     connector_history.add_argument("--period", default="1d", help="Bar interval for SDK connectors: 1m/5m/15m/30m/1h/4h/1d/1w/1M")
     connector_history.add_argument("--limit", dest="bar_limit", type=int, default=90, help="Number of bars for SDK connectors")
+
+    connector_qualify = connector_subparsers.add_parser(
+        "qualify", help="Manage signed Node 12C paper qualification"
+    )
+    qualify_subparsers = connector_qualify.add_subparsers(dest="qualify_command")
+
+    qualify_start = qualify_subparsers.add_parser(
+        "start", help="Start a signed paper-soak campaign"
+    )
+    qualify_start.add_argument("profile", help="Trading-enabled paper profile id")
+    qualify_start.add_argument("--account-ref", required=True)
+    qualify_start.add_argument("--build-revision", required=True)
+    qualify_start.add_argument(
+        "--calendar", dest="calendar_path", required=True,
+        help="JSON market-session manifest containing at least 30 sessions",
+    )
+    qualify_start.add_argument("--actor", default="operator:cli")
+
+    qualify_collect = qualify_subparsers.add_parser(
+        "collect", help="Collect broker snapshots and append the closed session"
+    )
+    qualify_collect.add_argument("campaign_id")
+    qualify_collect.add_argument(
+        "--session-proof", dest="session_proof_path", required=True,
+        help="JSON runner heartbeats, opening baseline, and fault-drill digests",
+    )
+    qualify_collect.add_argument("--symbol", required=True)
+    qualify_collect.add_argument(
+        "--probe-order", dest="probe_order_path", required=True,
+        help="JSON paper order used to verify client ID echo and idempotent replay",
+    )
+
+    qualify_run = qualify_subparsers.add_parser(
+        "run", help="Run one complete scheduled paper session"
+    )
+    qualify_run.add_argument("campaign_id")
+    qualify_run.add_argument("--symbol", required=True)
+    qualify_run.add_argument(
+        "--probe-order", dest="probe_order_path", required=True,
+        help="JSON paper order used for the post-close idempotency probe",
+    )
+    qualify_run.add_argument(
+        "--drills", dest="drills_path", default=None,
+        help="Optional JSON fault-drill results with artifact SHA-256 digests",
+    )
+    qualify_run.add_argument(
+        "--poll-seconds", type=float, default=60.0,
+        help="Connector heartbeat interval from 1 to 300 seconds",
+    )
+
+    qualify_status = qualify_subparsers.add_parser(
+        "status", help="Verify and show signed paper-soak progress"
+    )
+    qualify_status.add_argument("campaign_id")
+
+    qualify_promote = qualify_subparsers.add_parser(
+        "promote", help="Advance 30 accepted signed days to pilot eligible"
+    )
+    qualify_promote.add_argument("campaign_id")
+    qualify_promote.add_argument("--actor", default="release-gate:cli")
+    qualify_promote.add_argument(
+        "--confirm", action="store_true",
+        help="Confirm review of the complete signed evidence chain",
+    )
 
     for name, help_text in (
         ("start", "Start the selected live connector runner"),

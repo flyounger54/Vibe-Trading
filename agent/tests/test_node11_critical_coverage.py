@@ -335,3 +335,31 @@ def test_mcp_broker_quote_continues_after_exception(monkeypatch: pytest.MonkeyPa
     guard._adapter = Adapter()
     monkeypatch.setattr(guard, "_read_tools", lambda operation, fallback: ("bad_quote", "good_quote"))
     assert guard._broker_quote_price("AAPL") == 15.0
+
+
+def test_mcp_notional_normalization_covers_every_fail_closed_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = object.__new__(order_guard.LiveOrderGuardTool)
+    explicit = _intent(quantity=None, notional=100.0)
+    assert guard._normalize_intent_notional(explicit) is explicit
+
+    quantity = _intent(quantity=2.0, notional=None)
+    monkeypatch.setattr(guard, "_quote_price", lambda intent: None)
+    assert guard._normalize_intent_notional(quantity) is None
+
+    monkeypatch.setattr(guard, "_quote_price", lambda intent: -1.0)
+    assert guard._normalize_intent_notional(quantity) is None
+
+    monkeypatch.setattr(guard, "_quote_price", lambda intent: 25.0)
+    normalized = guard._normalize_intent_notional(quantity)
+    assert normalized is not None
+    assert normalized.notional_usd == 50.0
+    assert normalized.quantity == 2.0
+
+
+def test_mcp_quote_prefers_the_broker_price(monkeypatch: pytest.MonkeyPatch) -> None:
+    guard = object.__new__(order_guard.LiveOrderGuardTool)
+    monkeypatch.setattr(guard, "_broker_quote_price", lambda symbol: 42.5)
+
+    assert guard._quote_price(_intent(quantity=1.0)) == 42.5

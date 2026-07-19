@@ -140,6 +140,118 @@ class TestConnectorLiveDispatch:
             self._dispatch(["connector", "revoke", "robinhood-live-mcp"])
         m.assert_called_once_with("robinhood-live-mcp")
 
+    def test_qualify_start_routes_to_operator_handler(self) -> None:
+        with patch("cli._legacy.cmd_connector_qualify_start", return_value=0) as m:
+            result = self._dispatch(
+                [
+                    "connector",
+                    "qualify",
+                    "start",
+                    "alpaca-paper-trade",
+                    "--account-ref",
+                    "acct-1",
+                    "--build-revision",
+                    "a" * 40,
+                    "--calendar",
+                    "/tmp/calendar.json",
+                    "--actor",
+                    "operator:test",
+                ]
+            )
+        assert result == 0
+        m.assert_called_once_with(
+            "alpaca-paper-trade",
+            account_ref="acct-1",
+            build_revision="a" * 40,
+            calendar_path="/tmp/calendar.json",
+            actor="operator:test",
+        )
+
+    def test_qualify_status_routes_by_campaign(self) -> None:
+        campaign = "a" * 24
+        with patch("cli._legacy.cmd_connector_qualify_status", return_value=0) as status:
+            assert self._dispatch(["connector", "qualify", "status", campaign]) == 0
+        status.assert_called_once_with(campaign)
+
+    def test_qualify_has_no_raw_observation_record_command(self) -> None:
+        from cli._legacy import _build_parser
+
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(
+                ["connector", "qualify", "record", "a" * 24, "--observation", "/tmp/day.json"]
+            )
+
+    def test_qualify_collect_binds_session_proof_to_connector_reads(self) -> None:
+        campaign = "c" * 24
+        with patch("cli._legacy.cmd_connector_qualify_collect", return_value=0) as collect:
+            assert self._dispatch(
+                [
+                    "connector",
+                    "qualify",
+                    "collect",
+                    campaign,
+                    "--session-proof",
+                    "/tmp/session.json",
+                    "--symbol",
+                    "AAPL",
+                    "--probe-order",
+                    "/tmp/probe.json",
+                ]
+            ) == 0
+        collect.assert_called_once_with(
+            campaign,
+            session_proof_path="/tmp/session.json",
+            symbol="AAPL",
+            probe_order_path="/tmp/probe.json",
+        )
+
+    def test_qualify_run_routes_full_session_runner(self) -> None:
+        campaign = "d" * 24
+        with patch("cli._legacy.cmd_connector_qualify_run", return_value=0) as run:
+            assert self._dispatch(
+                [
+                    "connector",
+                    "qualify",
+                    "run",
+                    campaign,
+                    "--symbol",
+                    "AAPL",
+                    "--probe-order",
+                    "/tmp/probe.json",
+                    "--drills",
+                    "/tmp/drills.json",
+                    "--poll-seconds",
+                    "120",
+                ]
+            ) == 0
+        run.assert_called_once_with(
+            campaign,
+            symbol="AAPL",
+            probe_order_path="/tmp/probe.json",
+            drills_path="/tmp/drills.json",
+            poll_seconds=120.0,
+        )
+
+    def test_qualify_promote_requires_explicit_confirmation(self) -> None:
+        campaign = "b" * 24
+        with patch("cli._legacy.cmd_connector_qualify_promote", return_value=0) as promote:
+            assert self._dispatch(
+                [
+                    "connector",
+                    "qualify",
+                    "promote",
+                    campaign,
+                    "--actor",
+                    "release-gate:test",
+                    "--confirm",
+                ]
+            ) == 0
+        promote.assert_called_once_with(
+            campaign,
+            actor="release-gate:test",
+            confirm=True,
+        )
+
     def test_no_subcommand_is_usage_error(self) -> None:
         from cli._legacy import EXIT_USAGE_ERROR
 
